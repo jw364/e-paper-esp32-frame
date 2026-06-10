@@ -1,7 +1,6 @@
 {
-    "port": "COM6",
-    "configuration": "PSRAM=disabled,PartitionScheme=default,CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600,LoopCore=1,EventsCore=1,DebugLevel=none,EraseFlash=none",
-    "board": "esp32:esp32:dfrobot_firebeetle2_esp32e",
+    "configuration": "PSRAM=disabled,PartitionScheme=custom,CPUFreq=80,FlashMode=qio,FlashFreq=80,FlashSize=16M,UploadSpeed=921600,DebugLevel=none,EraseFlash=none",
+    "board": "esp32:esp32:esp32s3",
     "programmer": "esptool",
     "output": "build",
     "sketch": "e-paper-esp32-frame.ino"

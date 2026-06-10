@@ -1,13 +1,65 @@
 import tkinter as tk
-import random
-from tkinter import filedialog as fd
-from tkinter import Canvas
-from PIL import ImageTk, Image
-from tkinter import Tk, messagebox
-from datetime import datetime, timedelta
-import re
-import json
 import os
+import json
+from tkinter import filedialog as fd, messagebox
+from PIL import ImageTk, Image
+
+# ── E6 Spectra 6 colour palette ──────────────────────────────────────────────
+# Order must match: index → EPD nibble code
+_PALETTE_RGB = [
+    (0,   0,   0  ),  # 0 → Black  0x0
+    (255, 255, 255),  # 1 → White  0x1
+    (255, 255, 0  ),  # 2 → Yellow 0x2
+    (255, 0,   0  ),  # 3 → Red    0x3
+    (0,   0,   255),  # 4 → Blue   0x5  (nibble 0x5, not 0x4)
+    (0,   255, 0  ),  # 5 → Green  0x6
+]
+_EPD_CODES = [0x0, 0x1, 0x2, 0x3, 0x5, 0x6]
+
+DISPLAY_W = 600
+DISPLAY_H = 400
+MAX_PER_ALBUM = 25
+
+
+def _build_pil_palette() -> Image.Image:
+    """Return a mode-P image whose palette covers our 6 E6 colours."""
+    pal = Image.new("P", (1, 1))
+    flat = []
+    for r, g, b in _PALETTE_RGB:
+        flat += [r, g, b]
+    flat += [0] * (768 - len(flat))   # pad to 256 × 3 entries
+    pal.putpalette(flat)
+    return pal
+
+
+_PIL_PALETTE = _build_pil_palette()
+
+
+def _image_to_epd_bin(img: Image.Image) -> bytes:
+    """
+    Resize `img` to 600×400, apply Floyd-Steinberg dithering against the
+    Spectra 6 palette, and return the packed 4-bit binary (120 000 bytes).
+    Two pixels are packed per byte: high nibble = left pixel, low nibble = right.
+    """
+    img = img.convert("RGB").resize((DISPLAY_W, DISPLAY_H), Image.LANCZOS)
+
+    # PIL's C-implemented dither is fast and correct for this palette
+    quantized = img.quantize(palette=_PIL_PALETTE,
+                             dither=Image.Dither.FLOYDSTEINBERG)
+
+    pixels = list(quantized.getdata())   # palette indices 0-5
+
+    result = bytearray()
+    for i in range(0, len(pixels) - 1, 2):
+        hi = _EPD_CODES[pixels[i]]
+        lo = _EPD_CODES[pixels[i + 1]]
+        result.append((hi << 4) | lo)
+    # If total pixel count is odd (shouldn't happen for 600×400) pad with white
+    if len(pixels) % 2:
+        result.append((_EPD_CODES[pixels[-1]] << 4) | 0x1)
+
+    return bytes(result)
+
 
 class ImageHandler:
     main = None
@@ -15,323 +67,281 @@ class ImageHandler:
 
     def __init__(self, main):
         self.main = main
+        # Each entry:
+        #   { filename, original_filepath, x, y, x_offset, y_offset,
+        #     rotate, scale, album }
+        # album = 0, 1, or None (unassigned)
         self.fileData = []
 
+    # ── Loading ──────────────────────────────────────────────────────────────
     def loadImages(self):
-        filetypes = (
-            ('Images', '*.jpg'),
-            ('Images', '*.jpeg'),
-            ('Images', '*.png'),
-            ('Images', '*.bmp')
-        )
-
-        newFilePaths = fd.askopenfilenames(
-            title='Open image Files',
-            initialdir='/',
-            filetypes=filetypes)
-
-        if len(newFilePaths) == 0:
+        paths = fd.askopenfilenames(
+            title="Open image files",
+            initialdir="/",
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp")])
+        if not paths:
             return
 
-   
-        relative_path = os.path.dirname(newFilePaths[0])
-        tempFileData = []
-        if(len(self.fileData) == 0):
-            backup_file_path = relative_path + "/backup.json"
-            if os.path.exists(backup_file_path):
-                with open(backup_file_path, 'r') as f:
-                    tempFileData = json.load(f)
+        relative_dir = os.path.dirname(paths[0])
+        backup_path  = os.path.join(relative_dir, "backup.json")
+        saved = []
+        if not self.fileData and os.path.exists(backup_path):
+            with open(backup_path, "r") as f:
+                saved = json.load(f)
 
-
-        # Put the fileNames into a scrollable listbox
-        for filePath in newFilePaths:
-            # in tempFileData array, check if there is an object with the field "filename" == filePath.split('/')[-1]
-            foundPathInBackup = False
-            for i in range(len(tempFileData)):
-                if tempFileData[i]["filename"] == filePath.split('/')[-1]:
-                    tempFileData[i]["original_filepath"] = filePath
-                    self.fileData.append(tempFileData[i])
-                    foundPathInBackup = True
-                    # self.setImageSize(len(self.fileData)-1)
-                    break
-            if (not foundPathInBackup):
-                print(filePath)
-                self.initImage(filePath)  # Use the last index
-            
-            if(self.fileData[-1]["date"] != None):
-                self.main.listbox.insert(len(self.fileData)-1, self.fileData[-1]["date"] + " - " + self.fileData[-1]["original_filepath"].split('/')[-1])
-                self.main.listbox.itemconfig(len(self.fileData)-1, {'bg':'#66f4b9'})
+        for path in paths:
+            basename = os.path.basename(path)
+            found = next((s for s in saved if s.get("filename") == basename), None)
+            if found:
+                found["original_filepath"] = path
+                self.fileData.append(found)
             else:
-                self.main.listbox.insert(tk.END, filePath.split('/')[-1])
+                self._initImage(path)
+
+            self._refreshListEntry(len(self.fileData) - 1)
+
         self.imageSelected = 0
         self.main.listbox.selection_set(0)
         self.canvasImage(0)
+        self._updateAlbumCounts()
 
-    def setImageDate(self, event):
-        print("Setting Image Date")
-        if(self.imageSelected == None):
-            print("No Image Selected")
-            self.main.date_entry.delete(0, 'end')
+    def _initImage(self, filepath):
+        self.fileData.append({
+            "filename":          os.path.basename(filepath),
+            "original_filepath": filepath,
+            "x": 0, "y": 0,
+            "x_offset": 0, "y_offset": 0,
+            "rotate": 0, "scale": 1,
+            "album": None,
+        })
+        self._setImageSize(len(self.fileData) - 1)
+
+    # ── Album assignment ─────────────────────────────────────────────────────
+    def setImageAlbum(self, album: int):
+        if self.imageSelected is None:
             return
-        for i in range(len(self.fileData)):
-            if self.fileData[i]["date"] == self.main.date_entry.get():
-                messagebox.showinfo("Error", "Datum bereits vergeben.", parent=self.main.root)
-                return
-            
-        self.fileData[self.imageSelected]["date"] = self.main.date_entry.get()
-        # self.main.change_date_button.focus_set()
-        # Change the name of the listbox item so that it has the leading date
-        self.main.listbox.delete(self.imageSelected)
-        self.main.listbox.insert(self.imageSelected, self.fileData[self.imageSelected]["date"] + " - " + self.fileData[self.imageSelected]["original_filepath"].split('/')[-1])
-        self.main.listbox.selection_set(self.imageSelected)
-        self.main.listbox.itemconfig(self.imageSelected, {'bg':'#66f4b9'})
-        self.createBackupFile(self.imageSelected)
-        self.canvasImage(self.imageSelected)
-    
-    def deleteImageDate(self):
-        print("Setting Image Date")
-        if(self.imageSelected == None):
-            print("No Image Selectdfgfdged")
-            self.main.date_entry.delete(0, 'end')
+        # Check slot availability
+        count = sum(1 for d in self.fileData if d["album"] == album)
+        current = self.fileData[self.imageSelected]["album"]
+        if current != album and count >= MAX_PER_ALBUM:
+            messagebox.showwarning(
+                "Album full",
+                f"Album {album} already has {MAX_PER_ALBUM} photos.",
+                parent=self.main.root)
             return
-        self.fileData[self.imageSelected]["date"] = None
-        self.main.listbox.delete(self.imageSelected)
-        self.main.listbox.insert(self.imageSelected, self.fileData[self.imageSelected]["original_filepath"].split('/')[-1])
-        # select the new inserted item
-        self.main.listbox.selection_set(self.imageSelected)
-        self.main.listbox.itemconfig(self.imageSelected, {'bg':'white'})
-        self.createBackupFile(self.imageSelected)
-        self.canvasImage(self.imageSelected)
+        self.fileData[self.imageSelected]["album"] = album
+        self._refreshListEntry(self.imageSelected)
+        self._saveBackup(self.imageSelected)
+        self._updateAlbumCounts()
 
-    def exportImages(self):
-        print("Exporting Images")
-        if(len(self.fileData) == 0):
-            messagebox.showinfo("Error", "Es wurden keine Bilder geladen.", parent=self.main.root)
+    def clearImageAlbum(self):
+        if self.imageSelected is None:
             return
+        self.fileData[self.imageSelected]["album"] = None
+        self._refreshListEntry(self.imageSelected)
+        self._saveBackup(self.imageSelected)
+        self._updateAlbumCounts()
 
-        # Create a filename dialog
-        filepath = fd.askdirectory(
-            title="Select directory to save images",
-            initialdir="/"
-        )
+    def _updateAlbumCounts(self):
+        c0 = sum(1 for d in self.fileData if d["album"] == 0)
+        c1 = sum(1 for d in self.fileData if d["album"] == 1)
+        self.main.album0_count_var.set(f"Album 0: {c0}/{MAX_PER_ALBUM}")
+        self.main.album1_count_var.set(f"Album 1: {c1}/{MAX_PER_ALBUM}")
 
-        # Check if a filename was selected
-        if not filepath:
-            return
-
-        # Check if a file was selected
-        if filepath:
-            # print (filepath)
-            # Loop over the selected images
-
-            dateSelectedFiles = [data.copy() for data in self.fileData if data["date"] is not None]
-            dateNotSelectedFiles = [data.copy() for data in self.fileData if data["date"] is None]	
-            #Shuffle dateNotSelectedFiles randomly
-            random.shuffle(dateNotSelectedFiles)
-            
-            offsetDate = self.main.offset_date_entry.get()
-            offsetDate = datetime.strptime(offsetDate, '%d.%m.%Y')
-
-            newFileData = []
-
-            for i in range(len(self.fileData)):
-                dateFound = False
-                for data in dateSelectedFiles:
-                    if data["date"] == offsetDate.strftime('%d.%m.%Y'):
-                        print("Found Date")
-                        newFileData.append(data)
-                        dateFound = True
-                        #continue the outer for loop
-                        break
-
-                if not dateFound:
-                    #Append the next date from dateNotSelectedFiles and put it in newFileData
-                    if len(dateNotSelectedFiles) == 0:
-                        break
-
-                    dateNotSelectedFile = dateNotSelectedFiles.pop()
-                    dateNotSelectedFile["date"] = offsetDate.strftime('%d.%m.%Y')
-                    newFileData.append(dateNotSelectedFile)
-                offsetDate += timedelta(days=1)
-
-            filePathFromLoading = ""
-
-            for i in range(len(newFileData)):
-                # Open the image file
-                img = self.getAdaptedImage(newFileData[i])
-                if img.mode == 'RGBA':
-                    background = Image.new('RGBA', img.size, (255,255,255))
-                    img = Image.alpha_composite(background, img)
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                background = Image.new('RGB', (800, 480), (255, 255, 255))
-                background.paste(img, (int(-newFileData[i]["x_offset"]), int(-newFileData[i]["y_offset"])))
-                # print(newFileData[i]["filename"])
-                # ascii_filename = newFileData[i]["filename"].split('/')[-1].split('.')[0]
-                filename_with_extension = newFileData[i]["filename"].split('/')[-1]
-                ascii_filename = filename_with_extension.rsplit('.', 1)[0]
-                # print(ascii_filename)
-                pattern = r"\d{3}_\d{2}\.\d{2}\.\d{4}_"
-                ascii_filename = re.sub(pattern, '', ascii_filename)
-                # print(ascii_filename)
-                ascii_filename = ascii_filename.encode("ascii", errors="ignore").decode()
-                # print(ascii_filename)
-                filename = str(i).zfill(3) + "_" + newFileData[i]["date"] + "_" + ascii_filename + ".bmp"
-                    
-                # self.fileData[i]["filename"] = filename
-                path = filepath + "/" + filename
-                # Save the image as BMP
-
-                background.save(path)
-
-                # if(i == 0):
-                #     filePathFromLoading = os.path.dirname(self.fileData[i]["original_filepath"])
-
-                # print(path)
+    def _refreshListEntry(self, index):
+        d = self.fileData[index]
+        name = os.path.basename(d["original_filepath"])
+        if d["album"] is not None:
+            label = f"[Album {d['album']}] {name}"
+            bg    = '#a8d8a8' if d["album"] == 0 else '#f9c784'
         else:
+            label = name
+            bg    = 'white'
+        self.main.listbox.delete(index)
+        self.main.listbox.insert(index, label)
+        self.main.listbox.itemconfig(index, {'bg': bg})
+        self.main.listbox.selection_set(index)
+
+    # ── Export ───────────────────────────────────────────────────────────────
+    def exportImages(self):
+        if not self.fileData:
+            messagebox.showinfo("Nothing to export", "No images loaded.",
+                                parent=self.main.root)
             return
-        
-        #generate a info.txt file and write the current timestamp in it
-        with open(filepath + "/info.txt", 'w') as f:
-            f.write(str(datetime.now()))
 
-        # with open(filePathFromLoading + "/backup.json", 'w') as f:
-        #     json.dump(self.fileData, f)
+        out_dir = fd.askdirectory(title="Select output directory (data/ will be created here)",
+                                  initialdir="/")
+        if not out_dir:
+            return
 
-        # When the export is done, show a message box
-        messagebox.showinfo("Export fertig", "Bilder wurden Erfolgreich Exportiert.", parent=self.main.root)
-        # self.main.root.destroy()  # This will close the message box and the root window
+        a0 = [d for d in self.fileData if d["album"] == 0]
+        a1 = [d for d in self.fileData if d["album"] == 1]
+
+        if not a0 and not a1:
+            messagebox.showinfo("No albums assigned",
+                                "Assign photos to Album 0 or Album 1 before exporting.",
+                                parent=self.main.root)
+            return
+
+        errors = []
+        for album_idx, album_data in ((0, a0), (1, a1)):
+            album_dir = os.path.join(out_dir, "data", f"a{album_idx}")
+            os.makedirs(album_dir, exist_ok=True)
+            for photo_idx, entry in enumerate(album_data[:MAX_PER_ALBUM]):
+                try:
+                    img = self._getAdaptedImage(entry)
+                    if img.mode == "RGBA":
+                        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+                        img = Image.alpha_composite(bg, img)
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+
+                    # Paste onto exact 600×400 canvas with white background
+                    canvas = Image.new("RGB", (DISPLAY_W, DISPLAY_H), (255, 255, 255))
+                    canvas.paste(img, (int(-entry["x_offset"]),
+                                      int(-entry["y_offset"])))
+
+                    bin_data = _image_to_epd_bin(canvas)
+                    out_path = os.path.join(album_dir, f"{photo_idx:02d}.bin")
+                    with open(out_path, "wb") as f:
+                        f.write(bin_data)
+                except Exception as e:
+                    errors.append(f"{entry['filename']}: {e}")
+
+        if errors:
+            messagebox.showwarning("Export finished with errors",
+                                   "\n".join(errors), parent=self.main.root)
+        else:
+            a0_count = min(len(a0), MAX_PER_ALBUM)
+            a1_count = min(len(a1), MAX_PER_ALBUM)
+            messagebox.showinfo(
+                "Export complete",
+                f"Exported {a0_count} photo(s) to data/a0/\n"
+                f"Exported {a1_count} photo(s) to data/a1/\n\n"
+                f"Upload the data/ folder to the ESP32 using the\n"
+                f"Arduino IDE LittleFS Data Uploader plug-in.",
+                parent=self.main.root)
+
+    # ── Delete ───────────────────────────────────────────────────────────────
     def deleteImage(self):
-        if(self.imageSelected == None):
+        if self.imageSelected is None:
             return
         self.main.listbox.delete(self.imageSelected)
         self.fileData.pop(self.imageSelected)
-        if(len(self.fileData) == 0):
+        if not self.fileData:
             self.imageSelected = None
             self.main.canvas.delete("all")
-            return
-        if(self.imageSelected >= len(self.fileData)):
-            self.imageSelected = len(self.fileData) - 1
         else:
-            self.imageSelected = 0
-        self.main.listbox.selection_set(self.imageSelected)
-        self.canvasImage(self.imageSelected)
+            self.imageSelected = min(self.imageSelected, len(self.fileData) - 1)
+            self.main.listbox.selection_set(self.imageSelected)
+            self.canvasImage(self.imageSelected)
+        self._updateAlbumCounts()
+
     def deleteAllImages(self):
         self.main.listbox.delete(0, tk.END)
-        self.fileData = []
+        self.fileData.clear()
         self.imageSelected = None
         self.main.canvas.delete("all")
+        self._updateAlbumCounts()
 
-    def initImage(self, filePath):
-        self.fileData.append({'x': 0, 'y': 0, 'x_offset' : 0, 'y_offset' : 0, 'rotate' : 0, 'scale' : 1, 'date' : None, 'filename': filePath.split('/')[-1], 'original_filepath': filePath})
-        self.setImageSize(len(self.fileData)-1)
-
+    # ── Image manipulation ───────────────────────────────────────────────────
     def resetImage(self, index):
-        self.fileData[index]["x_offset"] = 0
-        self.fileData[index]["y_offset"] = 0
-        self.fileData[index]["scale"] = 1
-        self.fileData[index]["rotate"] = 0
-        self.setImageSize(index)
+        if index is None:
+            return
+        self.fileData[index].update(x_offset=0, y_offset=0, scale=1, rotate=0)
+        self._setImageSize(index)
         self.canvasImage(index)
-        self.createBackupFile(index)
+        self._saveBackup(index)
 
-    def createBackupFile(self, index):
-        print("Creating Backup File")
-        filePathFromLoading = os.path.dirname(self.fileData[index]["original_filepath"])
-        with open(filePathFromLoading + "/backup.json", 'w') as f:
-            json.dump(self.fileData, f)
-
-
-    def setImageSize(self, index):
-        # print(index, self.fileData)
-        img = Image.open(self.fileData[index]["original_filepath"])
-        x_offset = 0
-        y_offset = 0
-
-        if(self.fileData[index]["rotate"]%180 != 0):            
-            aspect_ratio = img.width / img.height
-            new_height = 800
-            new_width = round(new_height * aspect_ratio)
-            if new_width < 480:
-                new_width = 480
-                new_height = round(new_width / aspect_ratio)
-                x_offset = (new_height - 800) / 2
-            else:
-                y_offset = (new_width - 480) / 2
-        else:
-            aspect_ratio = img.width / img.height
-
-            new_width = 800
-            new_height = round(new_width / aspect_ratio)
-        
-            if new_height < 480:
-                new_height = 480
-                new_width = round(new_height * aspect_ratio)
-                x_offset = (new_width - 800) / 2
-            else:
-                y_offset = (new_height - 480) / 2
-
-        self.fileData[index]["x"] = new_width
-        self.fileData[index]["y"] = new_height
-        self.fileData[index]["x_offset"] = x_offset
-        self.fileData[index]["y_offset"] = y_offset
-
-    def getAdaptedImage(self, fileData):
-        img = Image.open(fileData["original_filepath"])
-        img = img.resize((int(fileData["x"] * fileData["scale"]), int(fileData["y"] * fileData["scale"])))        
-        img = img.rotate(fileData["rotate"], expand = True)
-
-        return img
     def rotateImage(self, angle):
-        if(self.imageSelected == None):
+        if self.imageSelected is None:
             return
         self.fileData[self.imageSelected]["rotate"] += angle
         self.fileData[self.imageSelected]["scale"] = 1
-        self.setImageSize(self.imageSelected)
-        self.createBackupFile(self.imageSelected)
+        self._setImageSize(self.imageSelected)
+        self._saveBackup(self.imageSelected)
         self.canvasImage(self.imageSelected)
+
     def changeOffset(self, x, y):
-        if(self.imageSelected == None):
+        if self.imageSelected is None:
             return
         self.fileData[self.imageSelected]["x_offset"] += x
         self.fileData[self.imageSelected]["y_offset"] += y
-        self.createBackupFile(self.imageSelected)
+        self._saveBackup(self.imageSelected)
         self.canvasImage(self.imageSelected)
 
     def changeScale(self, value):
-        if(self.imageSelected == None):
+        if self.imageSelected is None:
             return
-        new_scale = self.fileData[self.imageSelected]["scale"] + value
+        d = self.fileData[self.imageSelected]
+        new_scale = d["scale"] + value
         if new_scale <= 0.05:
             return
-        self.fileData[self.imageSelected]["scale"] = new_scale
-        self.fileData[self.imageSelected]["x_offset"] += self.fileData[self.imageSelected]["x"]/2 * value
-        self.fileData[self.imageSelected]["y_offset"] += self.fileData[self.imageSelected]["y"]/2 * value
-        # self.setImageSize(self.imageSelected)
-        self.createBackupFile(self.imageSelected)
+        d["scale"] = new_scale
+        d["x_offset"] += d["x"] / 2 * value
+        d["y_offset"] += d["y"] / 2 * value
+        self._saveBackup(self.imageSelected)
         self.canvasImage(self.imageSelected)
 
+    # ── Canvas preview ───────────────────────────────────────────────────────
     def canvasImage(self, index):
-        img = self.getAdaptedImage(self.fileData[index])
+        img   = self._getAdaptedImage(self.fileData[index])
         photo = ImageTk.PhotoImage(img)
-
+        d     = self.fileData[index]
 
         self.main.canvas.image = photo
         self.main.canvas.create_image(
-            0 - self.fileData[index]["x_offset"] + self.main.offsetFrameX,
-            0 - self.fileData[index]["y_offset"] + self.main.offsetFrameY,
-            image=self.main.canvas.image,
-            anchor=tk.NW)
-        
-        x2 = self.main.offsetFrameX + 800
-        y2 = self.main.offsetFrameY + 480
+            -d["x_offset"] + self.main.offsetFrameX,
+            -d["y_offset"] + self.main.offsetFrameY,
+            image=photo, anchor=tk.NW)
 
-        # Draw a red rectangle on the canvas
-        self.main.canvas.create_rectangle(self.main.offsetFrameX, self.main.offsetFrameY, x2, y2, outline='red', width=4, dash=(3,5) ) 
+        x2 = self.main.offsetFrameX + DISPLAY_W
+        y2 = self.main.offsetFrameY + DISPLAY_H
+        self.main.canvas.create_rectangle(
+            self.main.offsetFrameX, self.main.offsetFrameY, x2, y2,
+            outline='red', width=3, dash=(4, 4))
 
-        if(self.fileData[index]["date"] != None):
-            print("Setting Date")
-            self.main.date_entry.set_date(self.fileData[index]["date"])
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    def _setImageSize(self, index):
+        d   = self.fileData[index]
+        img = Image.open(d["original_filepath"])
+        rotated_90 = d["rotate"] % 180 != 0
+
+        if rotated_90:
+            aspect = img.width / img.height
+            new_h = DISPLAY_W
+            new_w = round(new_h * aspect)
+            if new_w < DISPLAY_H:
+                new_w = DISPLAY_H
+                new_h = round(new_w / aspect)
+                x_off = (new_h - DISPLAY_W) / 2
+                y_off = 0
+            else:
+                x_off = 0
+                y_off = (new_w - DISPLAY_H) / 2
         else:
-            print("Deleting Date")
-            self.main.date_entry.delete(0, 'end')
+            aspect = img.width / img.height
+            new_w = DISPLAY_W
+            new_h = round(new_w / aspect)
+            if new_h < DISPLAY_H:
+                new_h = DISPLAY_H
+                new_w = round(new_h * aspect)
+                x_off = (new_w - DISPLAY_W) / 2
+                y_off = 0
+            else:
+                x_off = 0
+                y_off = (new_h - DISPLAY_H) / 2
+
+        d.update(x=new_w, y=new_h, x_offset=x_off, y_offset=y_off)
+
+    def _getAdaptedImage(self, d):
+        img = Image.open(d["original_filepath"])
+        img = img.resize((int(d["x"] * d["scale"]), int(d["y"] * d["scale"])))
+        img = img.rotate(d["rotate"], expand=True)
+        return img
+
+    def _saveBackup(self, index):
+        src_dir = os.path.dirname(self.fileData[index]["original_filepath"])
+        backup_path = os.path.join(src_dir, "backup.json")
+        with open(backup_path, "w") as f:
+            json.dump(self.fileData, f)

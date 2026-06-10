@@ -1,0 +1,11 @@
+# Custom partition table for LILYGO T7-S3 V1.1 (16 MB flash)
+# 4 MB app partition + ~12 MB LittleFS for image storage
+#
+# Arduino IDE: Tools → Partition Scheme → "Custom (partitions.csv)"
+# PlatformIO : board_build.partitions = partitions.csv
+#
+# Name,     Type, SubType,  Offset,   Size,      Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x400000,
+spiffs,     data, spiffs,   0x410000, 0xBF0000,
