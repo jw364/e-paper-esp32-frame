@@ -22,6 +22,7 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 - [Pin Reference](#pin-reference)
 - [SD Card Setup](#sd-card-setup)
 - [Album Switching](#album-switching)
+- [Wokwi Simulation](#wokwi-simulation)
 - [Image Conversion](#image-conversion)
 - [Build & Flash](#build--flash)
 - [Power Budget](#power-budget)
@@ -35,7 +36,7 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 - **6-color e-ink display** — Waveshare 7.3" Spectra 6 (Black, White, Red, Yellow, Blue, Green) at 800×480
 - **Floyd–Steinberg dithering** — converts full-color photos to the 6-color palette with smooth gradients and no banding
 - **Date-aware scheduling** — assign specific images to specific calendar dates; fall back to sequential rotation on undated days
-- **Two switchable albums** — hold the button to switch between Album A and Album B; album selection persists across power cycles
+- **Two switchable albums** — hold ≥2 s then press twice within a 5-second window to switch between Album A and Album B; album selection persists across power cycles
 - **Ultra-low power** — ~20 µA deep sleep; estimated 18–24 months on a 1200 mAh LiPo with one refresh per day
 - **MOSFET power gating** — AO3401 P-channel MOSFET cuts power to the display and SD card during sleep
 - **Battery monitor** — low-battery indicator in the image corner; indefinite sleep on critical voltage
@@ -68,7 +69,7 @@ Boot / Timer wakeup
 Release GPIO hold → drive MOSFET LOW → power on peripherals
        │
        ▼
-Check album button (up to ~8.5 s if held; instant skip otherwise)
+Check album button (up to ~8 s if held; instant skip otherwise)
        │
        ▼
 Mount SD card → connect WiFi → sync NTP time
@@ -313,25 +314,45 @@ list, current position, and file cache in NVS separately.
 The button requires a deliberate multi-step sequence to prevent accidental switches:
 
 ```
-Step 1  Hold button ≥ 2.5 s   →  release
-Step 2  Press once within 3 s  →  release
-Step 3  Press again within 3 s →  album switches
+Step 1  Hold button > 2 s           →  release
+Step 2  5-second verification window begins
+Step 3  Press button once            →  release  ┐ both presses must fall
+Step 4  Press button a second time   →  album switches  ┘ within the 5 s window
 ```
 
 Any step that times out or is skipped cancels the operation silently with no effect.
-A simple short press is always ignored.
+A short press (< 2 s) is always ignored.
+
+**Edge cases that do NOT switch albums:**
+- Hold shorter than 2 s
+- Only one press during the 5-second window
+- Two presses that both arrive after the 5-second window expires
+- Random button activity that does not follow the exact sequence
 
 ### Serial log output (115200 baud)
 
+Successful switch:
 ```
-[BTN] Button active at boot.
-[BTN] Hold for 2.5 s to initiate album switch...
-[BTN] Hold detected! Release button to continue.
-[BTN] Awaiting confirmation press 1/2 (within 3 s)...
-[BTN] Confirmation press 1/2 received.
-[BTN] Awaiting confirmation press 2/2 (within 3 s)...
-[BTN] Confirmation press 2/2 received.
+[BTN] Button active — waiting to detect hold...
+[BTN] Hold detected! Duration: 2053 ms.
+[BTN] Release button to start verification window...
+[BTN] Verification window started — press button TWICE within 5 s.
+[BTN] First verification press detected (1234 ms into window).
+[BTN] Second verification press detected (2891 ms into window).
 [BTN] *** ALBUM SWITCHED: A → B ***
+```
+
+Hold too short:
+```
+[BTN] Button active — waiting to detect hold...
+[BTN] Hold too short (832 ms — need 2000 ms). Cancelled.
+```
+
+Only one press in the window:
+```
+[BTN] Verification window started — press button TWICE within 5 s.
+[BTN] First verification press detected (1500 ms into window).
+[BTN] Verification timeout — no press 2 received. Cancelled.
 ```
 
 ### Timing constants
@@ -340,8 +361,8 @@ All timing values are `#define` constants near the top of `e-paper-esp32-frame.i
 
 ```cpp
 #define BUTTON_DEBOUNCE_MS        50    // Stable-state time for a valid edge (ms)
-#define ALBUM_HOLD_DURATION_MS  2500    // Required hold to begin the sequence (ms)
-#define ALBUM_CONFIRM_WINDOW_MS 3000    // Window for each confirmation press (ms)
+#define ALBUM_HOLD_DURATION_MS  2000    // Minimum hold to begin the sequence (ms)
+#define ALBUM_CONFIRM_WINDOW_MS 5000    // Shared window for BOTH confirmation presses (ms)
 #define BUTTON_POLL_MS            10    // Polling interval during button checks (ms)
 ```
 
@@ -350,6 +371,65 @@ All timing values are `#define` constants near the top of `e-paper-esp32-frame.i
 The active album index is stored in ESP32-S3 NVS (flash) under namespace `e-paper`,
 key `albumIndex`. It survives deep sleep, hard resets, power disconnection, and
 firmware reflashing (NVS is in a separate flash partition).
+
+---
+
+## Wokwi Simulation
+
+The repository includes a complete [Wokwi](https://wokwi.com) simulation setup for
+testing the firmware — including the album-switch button sequence — without physical
+hardware.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `diagram.json` | Wokwi hardware layout: ESP32-S3 + pushbutton + SD card + BUSY pull-up |
+| `wokwi.toml` | Points Wokwi to the compiled ELF/BIN in `build/` |
+| `libraries.txt` | ArduinoJson dependency for Wokwi GitHub Actions CI |
+| `sdcard/` | SD card filesystem root served to the simulation |
+| `sdcard/setup.json` | WiFi credentials — pre-configured for Wokwi's `Wokwi-GUEST` AP |
+| `sdcard/albumA/test.bmp` | Minimal 4×4-pixel BMP used as test image |
+
+### Setup
+
+1. Install the **Arduino** extension (Microsoft) and **Wokwi Simulator** extension in VS Code.
+2. Install the `esp32:esp32` board package via Boards Manager.
+3. Install the `ArduinoJson` library (≥ v6) via Library Manager.
+4. Compile the sketch with **Ctrl+Alt+B**. Output lands in `build/`.
+5. Press **F1 → Wokwi: Start Simulator** (or `Ctrl+Shift+P`).
+
+> The BUSY pin (GPIO15) is wired to 3.3 V via a 10 kΩ resistor in `diagram.json`.
+> This simulates "display always ready", so all `EPD_7IN3F_BusyHigh()` calls return
+> immediately. A 30-second software timeout is also present as a safety net.
+
+### Triggering an album switch in the simulation
+
+Click the **green push button** in the Wokwi canvas:
+
+| Action | How to do it in Wokwi |
+|---|---|
+| Hold button | Click and **hold** the mouse button on the green button |
+| Release | Release the mouse button |
+| Short press | Click and release quickly (< 2 s) |
+
+**To perform a successful album switch:**
+
+1. At simulation start (or after reset), **click and hold** the green button for **more than 2 seconds**.
+2. **Release** the button.
+3. Within 5 seconds, **click and release** the button once.
+4. Within the same 5-second window, **click and release** the button a second time.
+5. Watch the Serial Monitor for `[BTN] *** ALBUM SWITCHED: A → B ***`.
+
+**To verify cancellation cases:**
+
+| Test | How |
+|---|---|
+| Hold < 2 s | Click and release quickly; observe "Hold too short" |
+| Only one press | Hold > 2 s, release, press once, do nothing — observe timeout |
+| Two presses after window | Hold > 2 s, release, wait > 5 s, then press twice — observe timeout |
+
+The Serial Monitor output (always shown) will log every step of the state machine.
 
 ---
 

@@ -41,9 +41,9 @@
  *   /fileStringB.txt ← auto-generated; do not edit
  *
  * ALBUM SWITCHING (button on GPIO1)
- *   1. Hold button ≥ ALBUM_HOLD_DURATION_MS  (~2.5 s)
+ *   1. Hold button > ALBUM_HOLD_DURATION_MS (2 s)
  *   2. Release
- *   3. Press twice within ALBUM_CONFIRM_WINDOW_MS (3 s each)
+ *   3. Press button TWICE within ALBUM_CONFIRM_WINDOW_MS (5 s shared window)
  *   Short presses and partial sequences are silently ignored.
  */
 
@@ -83,10 +83,9 @@
 #define BUTTON_PIN       1
 
 // ── Album-switch button timing constants ─────────────────────────────────────
-// Adjust these values to change button feel.
 #define BUTTON_DEBOUNCE_MS        50    // Stable-state time required for a valid edge (ms)
-#define ALBUM_HOLD_DURATION_MS  2500    // Hold duration that initiates album-switch flow (ms)
-#define ALBUM_CONFIRM_WINDOW_MS 3000    // Time window for each confirmation press (ms)
+#define ALBUM_HOLD_DURATION_MS  2000    // Minimum hold duration to initiate album-switch (ms)
+#define ALBUM_CONFIRM_WINDOW_MS 5000    // Shared window for BOTH confirmation presses (ms)
 #define BUTTON_POLL_MS            10    // Button state polling interval (ms)
 
 // ── Global objects ────────────────────────────────────────────────────────────
@@ -221,26 +220,32 @@ void checkAndHandleAlbumButton() {
   // Fast path: button not active — return immediately, no delay
   if (!readButton()) return;
 
-  Serial.println("[BTN] Button active at boot.");
-  Serial.println("[BTN] Hold for " + String(ALBUM_HOLD_DURATION_MS / 1000.0f, 1)
-                 + " s to initiate album switch...");
+  Serial.println("[BTN] Button active — waiting to detect hold...");
 
-  // ── Step 1: wait for hold duration ──────────────────────────────────────
-  unsigned long holdStart = millis();
-  bool held = false;
+  // ── Step 1: hold > ALBUM_HOLD_DURATION_MS ─────────────────────────────────
+  unsigned long holdStart    = millis();
+  unsigned long holdDuration = 0;
+  bool          held         = false;
+
   while (readButton()) {
-    if (millis() - holdStart >= ALBUM_HOLD_DURATION_MS) {
-      held = true;
+    unsigned long elapsed = millis() - holdStart;
+    if (elapsed >= ALBUM_HOLD_DURATION_MS) {
+      holdDuration = elapsed;
+      held         = true;
       break;
     }
     delay(BUTTON_POLL_MS);
   }
+
   if (!held) {
-    Serial.println("[BTN] Short press ignored (below hold threshold).");
+    Serial.println("[BTN] Hold too short (" + String(millis() - holdStart)
+                   + " ms — need " + String(ALBUM_HOLD_DURATION_MS)
+                   + " ms). Cancelled.");
     return;
   }
 
-  Serial.println("[BTN] Hold detected! Release button to continue.");
+  Serial.println("[BTN] Hold detected! Duration: " + String(holdDuration) + " ms.");
+  Serial.println("[BTN] Release button to start verification window...");
 
   // ── Step 2: wait for release ─────────────────────────────────────────────
   if (!waitForButtonState(false, 5000)) {
@@ -249,28 +254,44 @@ void checkAndHandleAlbumButton() {
   }
   delay(BUTTON_DEBOUNCE_MS);
 
-  // ── Step 3: first confirmation press ────────────────────────────────────
-  Serial.println("[BTN] Awaiting confirmation press 1/2 (within "
-                 + String(ALBUM_CONFIRM_WINDOW_MS / 1000) + " s)...");
-  if (!waitForButtonState(true, ALBUM_CONFIRM_WINDOW_MS)) {
-    Serial.println("[BTN] Album switch CANCELLED — no confirmation press 1/2.");
-    return;
+  // ── Step 3: shared 5-second window for BOTH confirmation presses ──────────
+  // windowStart is set once here; both presses must be detected before it expires.
+  Serial.println("[BTN] Verification window started — press button TWICE within "
+                 + String(ALBUM_CONFIRM_WINDOW_MS / 1000) + " s.");
+  unsigned long windowStart = millis();
+
+  // First confirmation press
+  {
+    unsigned long el  = millis() - windowStart;
+    unsigned long rem = (el >= (unsigned long)ALBUM_CONFIRM_WINDOW_MS)
+                        ? 0UL
+                        : ((unsigned long)ALBUM_CONFIRM_WINDOW_MS - el);
+    if (rem == 0 || !waitForButtonState(true, rem)) {
+      Serial.println("[BTN] Verification timeout — no press 1 received. Cancelled.");
+      return;
+    }
   }
-  Serial.println("[BTN] Confirmation press 1/2 received.");
+  Serial.println("[BTN] First verification press detected ("
+                 + String(millis() - windowStart) + " ms into window).");
   waitForButtonState(false, 1000);  // wait for release
   delay(BUTTON_DEBOUNCE_MS);
 
-  // ── Step 4: second confirmation press ───────────────────────────────────
-  Serial.println("[BTN] Awaiting confirmation press 2/2 (within "
-                 + String(ALBUM_CONFIRM_WINDOW_MS / 1000) + " s)...");
-  if (!waitForButtonState(true, ALBUM_CONFIRM_WINDOW_MS)) {
-    Serial.println("[BTN] Album switch CANCELLED — no confirmation press 2/2.");
-    return;
+  // Second confirmation press — still within the same 5-second window
+  {
+    unsigned long el  = millis() - windowStart;
+    unsigned long rem = (el >= (unsigned long)ALBUM_CONFIRM_WINDOW_MS)
+                        ? 0UL
+                        : ((unsigned long)ALBUM_CONFIRM_WINDOW_MS - el);
+    if (rem == 0 || !waitForButtonState(true, rem)) {
+      Serial.println("[BTN] Verification timeout — no press 2 received. Cancelled.");
+      return;
+    }
   }
-  Serial.println("[BTN] Confirmation press 2/2 received.");
+  Serial.println("[BTN] Second verification press detected ("
+                 + String(millis() - windowStart) + " ms into window).");
   waitForButtonState(false, 1000);
 
-  // ── Step 5: commit the switch ────────────────────────────────────────────
+  // ── Step 4: commit the switch ─────────────────────────────────────────────
   uint8_t currentAlbum = getAlbumIndex();
   uint8_t newAlbum     = currentAlbum ? 0 : 1;
   preferences.putUChar("albumIndex", newAlbum);
