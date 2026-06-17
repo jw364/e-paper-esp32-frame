@@ -1,167 +1,327 @@
-# E-Paper ESP32-S3 Frame
+# E-Paper ESP32-S3 Picture Frame
 
-Daily-updating e-paper picture frame with two independently switchable photo albums, Floyd–Steinberg dithering for rich color reproduction, and ultra-low deep-sleep power consumption.
+A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 6 full-color e-paper display. The frame wakes once a day, fetches the correct time over WiFi, renders the next photo from an SD card using Floyd–Steinberg dithering, updates the display, and returns to deep sleep — all in under 90 seconds. The e-ink panel holds the image indefinitely with zero power draw until the next update.
 
-![ESP e-paper frame](images/e-paper-esp32-frame.jpg?raw=true)
-![ESP e-paper frame backside](images/e-paper-esp32-frame-backside.jpg?raw=true)
+![Frame front](images/e-paper-esp32-frame.jpg?raw=true)
+![Frame back](images/e-paper-esp32-frame-backside.jpg?raw=true)
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Hardware](#hardware)
+- [How It Works](#how-it-works)
+- [Wiring](#wiring)
+  - [Full System Diagram](#full-system-diagram)
+  - [MOSFET Power Switch Circuit](#mosfet-power-switch-circuit)
+  - [Display HAT+ Connection](#display-hat-connection)
+  - [SD Card Connection](#sd-card-connection)
+  - [Album Button](#album-button)
+  - [Battery](#battery)
+- [Pin Reference](#pin-reference)
+- [SD Card Setup](#sd-card-setup)
+- [Album Switching](#album-switching)
+- [Image Conversion](#image-conversion)
+- [Build & Flash](#build--flash)
+- [Power Budget](#power-budget)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+---
+
+## Features
+
+- **6-color e-ink display** — Waveshare 7.3" Spectra 6 (Black, White, Red, Yellow, Blue, Green) at 800×480
+- **Floyd–Steinberg dithering** — converts full-color photos to the 6-color palette with smooth gradients and no banding
+- **Date-aware scheduling** — assign specific images to specific calendar dates; fall back to sequential rotation on undated days
+- **Two switchable albums** — hold the button to switch between Album A and Album B; album selection persists across power cycles
+- **Ultra-low power** — ~20 µA deep sleep; estimated 18–24 months on a 1200 mAh LiPo with one refresh per day
+- **MOSFET power gating** — AO3401 P-channel MOSFET cuts power to the display and SD card during sleep
+- **Battery monitor** — low-battery indicator in the image corner; indefinite sleep on critical voltage
+- **WiFi time sync** — NTP-synchronized scheduling; graceful fallback if WiFi is unavailable
+- **Included BMP converter** — Windows GUI tool to crop, rotate, and export photos to the correct format
 
 ---
 
 ## Hardware
 
-| Component | Notes |
+| Component | Specification |
 |---|---|
-| [LILYGO T7 S3 V1.1](https://www.lilygo.cc/products/t7-s3) | ESP32-S3, 8 MB OPI PSRAM, 16 MB Flash |
-| [Waveshare 7.3" Spectra 6 E6 E-Paper + HAT+](https://www.waveshare.com/product/displays/e-paper/epaper-1/7.3inch-e-paper-hat-e.htm) | 800×480, 6-color, SPI |
-| MicroSD card module | SPI, 3.3 V |
-| AO3401 P-channel MOSFET | High-side power switch for SD + display |
-| 3.7 V 1200 mAh LiPo | Connected to T7 S3 battery connector |
-| 10 kΩ resistor (×1) | MOSFET gate series resistor |
-| 100 kΩ resistor (×1) | MOSFET gate pull-up to 3.3 V |
-| Momentary push button | Album switch, wired to GPIO1 and GND |
+| [LILYGO T7 S3 V1.1](https://www.lilygo.cc/products/t7-s3) | ESP32-S3, 8 MB OPI PSRAM, 16 MB Flash, onboard LiPo charger |
+| [Waveshare 7.3" E-Paper HAT (E)](https://www.waveshare.com/product/displays/e-paper/epaper-1/7.3inch-e-paper-hat-e.htm) | Spectra 6 E6 panel, 800×480, 6-color, SPI, includes HAT+ driver board |
+| MicroSD card module | 3.3 V SPI type |
+| AO3401 P-channel MOSFET | SOT-23 or through-hole breakout |
+| 10 kΩ resistor | MOSFET gate series resistor |
+| 100 kΩ resistor | MOSFET gate pull-up |
+| Momentary push button | Album switch |
+| 3.7 V 1200 mAh LiPo battery | With JST-PH 2-pin connector to match T7 S3 |
 
 ---
 
-## Pin Map
+## How It Works
 
-| GPIO | Function | Direction |
-|---|---|---|
-| 10 | EPD CS (SPI2 FSPI) | Output |
-| 11 | EPD MOSI / DIN (SPI2 FSPI) | Output |
-| 12 | EPD SCLK (SPI2 FSPI) | Output |
-| 13 | EPD DC | Output |
-| 14 | EPD RST | Output |
-| 15 | EPD BUSY | Input |
-| 4 | SD CS (SPI3 HSPI) | Output |
-| 5 | SD MOSI (SPI3 HSPI) | Output |
-| 6 | SD SCLK (SPI3 HSPI) | Output |
-| 7 | SD MISO (SPI3 HSPI) | Input |
-| 16 | AO3401 gate (LOW=ON, HIGH=OFF) | Output |
-| 2 | Battery ADC (onboard /2 divider) | Analog Input |
-| 1 | Album switch button (active LOW) | Input |
-| 17 | Onboard LED — **do not use** | — |
-| 0 | BOOT button / strapping — **do not use** | — |
-| 19/20 | USB D−/D+ — **do not use** | — |
+```
+Boot / Timer wakeup
+       │
+       ▼
+Release GPIO hold → drive MOSFET LOW → power on peripherals
+       │
+       ▼
+Check album button (up to ~8.5 s if held; instant skip otherwise)
+       │
+       ▼
+Mount SD card → connect WiFi → sync NTP time
+       │
+       ▼
+Scan album directory → find next image by date or index
+       │
+       ▼
+Stream BMP from SD → Floyd–Steinberg dither → send pixels to display
+       │
+       ▼
+TurnOnDisplay (triggers e-ink refresh, ~30–40 s) → Sleep display
+       │
+       ▼
+Drive MOSFET HIGH → power off peripherals
+gpio_hold_en → deep sleep until next scheduled time (target: 10:00 AM daily)
+```
+
+The display retains the image without any power after the firmware calls `Sleep()`. The MOSFET cuts the 3.3 V rail to both the HAT+ and the SD card module during deep sleep, ensuring the only quiescent draw is the ESP32-S3 RTC (~20 µA).
 
 ---
 
 ## Wiring
 
-### AO3401 MOSFET Power Switch
-
-The AO3401 is a P-channel MOSFET acting as a high-side switch on the 3.3 V rail.
-When GPIO16 is driven LOW, Vgs ≈ −3.3 V → MOSFET conducts → peripherals powered.
-When GPIO16 is HIGH (or floating), Vgs ≈ 0 V → MOSFET off → peripherals unpowered.
+### Full System Diagram
 
 ```
-T7 S3 3.3V ───────────────────────┬──── AO3401 Source
-                                   │
-                                 [100kΩ pull-up]   ← ensures OFF during boot/sleep
-                                   │
-GPIO16 ────── [10kΩ series] ──────┤──── AO3401 Gate
-                                   
-AO3401 Drain ──────────────────────┬──── HAT+ VCC (3.3 V pin on HAT+ connector)
-                                   └──── SD module VCC
-T7 S3 GND ─────────────────────────┬──── HAT+ GND
-                                   └──── SD module GND
+                    ┌─────────────────────────────────────┐
+                    │         LILYGO T7 S3 V1.1           │
+                    │                                     │
+  LiPo ─────────── │ BAT    GPIO2 ──── [1MΩ]─┬─[1MΩ]─── │ ─── VBAT
+                    │                         └────────── │ (battery divider)
+                    │       GPIO16 ──────────────────────── MOSFET gate
+                    │        GPIO1 ──────────────────────── Album button ── GND
+                    │                                     │
+                    │  FSPI  GPIO10 (CS)                  │
+                    │        GPIO11 (MOSI) ───────────────── HAT+ display SPI
+                    │        GPIO12 (SCLK)                │
+                    │        GPIO13 (DC)                  │
+                    │        GPIO14 (RST)                 │
+                    │        GPIO15 (BUSY)                │
+                    │                                     │
+                    │  HSPI  GPIO4  (CS)                  │
+                    │        GPIO5  (MOSI) ───────────────── SD card module
+                    │        GPIO6  (SCLK)                │
+                    │        GPIO7  (MISO)                │
+                    │                                     │
+                    │        3.3V ─── MOSFET source       │
+                    │        GND  ─── HAT+ GND, SD GND    │
+                    └─────────────────────────────────────┘
+
+  MOSFET drain ──── HAT+ 3.3V pin
+               └─── SD module VCC
 ```
 
-**Why the 100 kΩ pull-up?**
-During boot, GPIO16 is briefly in high-impedance state. Without the pull-up the gate
-would float, causing momentary/unpredictable power to the display. The 100 kΩ pull-up
-holds the gate at source potential (Vgs = 0) → MOSFET stays off until firmware
-deliberately drives GPIO16 LOW.
+---
 
-**Why the 10 kΩ series resistor?**
-Limits in-rush gate charge current and damps oscillation on fast transitions.
+### MOSFET Power Switch Circuit
 
-### T7 S3 → Waveshare HAT+ (connect via jumper wires to HAT+ header)
+The AO3401 is a P-channel MOSFET used as a high-side switch. When its gate is pulled
+low (toward GND), it conducts and powers the peripherals. When its gate is at source
+potential (3.3 V), it is off.
 
 ```
-T7 S3 V1.1          HAT+ 40-pin header
-──────────          ───────────────────
-GPIO12  ──────────→ SCLK  (pin 23)
-GPIO11  ──────────→ MOSI  (pin 19)
-GPIO10  ──────────→ CS    (pin 24)
-GPIO13  ──────────→ DC    (BCM 25 / pin 22)
-GPIO14  ──────────→ RST   (BCM 17 / pin 11)
-GPIO15  ──────────→ BUSY  (BCM 24 / pin 18)
-MOSFET drain ─────→ 3.3V  (pin 1)
-GND     ──────────→ GND   (pin 6)
+   T7 S3 3.3 V ────────────────────────────┬──────── AO3401  S (source)
+                                            │
+                                          [100 kΩ]  ← pull-up: holds gate HIGH
+                                            │         (MOSFET off) during boot
+   GPIO16 ──────────── [10 kΩ] ────────────┤──────── AO3401  G (gate)
+                        series                          ↓ Vgs ≈ −3.3 V when GPIO16 LOW
+                                                        → MOSFET conducts
+                                                 AO3401  D (drain)
+                                                        │
+                          ┌─────────────────────────────┤
+                          │                             │
+                   HAT+ 3.3 V pin                SD module VCC
 ```
 
-The 7.3" e-paper panel connects to the HAT+ via its ribbon cable as shipped.
+**100 kΩ pull-up purpose:** GPIO16 is high-impedance for a brief moment during boot
+before the firmware configures it as an output. Without this resistor, the gate would
+float and the MOSFET could conduct unpredictably. The pull-up biases the gate to source
+potential (Vgs = 0) by default, keeping the MOSFET off until the firmware explicitly
+drives GPIO16 LOW.
 
-### T7 S3 → MicroSD Module
+**10 kΩ series resistor purpose:** Limits the peak gate-charge current on transitions
+and suppresses ringing on fast edges.
+
+---
+
+### Display HAT+ Connection
+
+Connect jumper wires from the T7 S3 to the Waveshare HAT+ 40-pin header. The e-paper
+panel itself attaches to the HAT+ via its FPC ribbon cable — no additional wiring
+needed between panel and HAT+.
 
 ```
-T7 S3 V1.1          SD module
-──────────          ─────────
-GPIO5   ──────────→ MOSI
-GPIO6   ──────────→ SCK
-GPIO7   ──────────→ MISO
-GPIO4   ──────────→ CS
-MOSFET drain ─────→ VCC (3.3 V)
-GND     ──────────→ GND
+T7 S3 V1.1        HAT+ 40-pin header (BCM numbering)
+──────────         ─────────────────────────────────
+GPIO12   ────────→ SCLK   pin 23  (BCM 11)
+GPIO11   ────────→ MOSI   pin 19  (BCM 10)
+GPIO10   ────────→ CE0    pin 24  (BCM  8)   ← SPI chip select
+GPIO13   ────────→ DC     pin 22  (BCM 25)
+GPIO14   ────────→ RST    pin 11  (BCM 17)
+GPIO15   ────────→ BUSY   pin 18  (BCM 24)
+MOSFET D ────────→ 3.3V   pin  1
+GND      ────────→ GND    pin  6
 ```
 
-### Album Switch Button
+---
+
+### SD Card Connection
+
+The SD card uses a completely separate SPI bus (SPI3 / HSPI) from the display (SPI2 /
+FSPI). This eliminates the pin-sharing conflict present in the original FireBeetle
+design.
 
 ```
-T7 S3 V1.1
-──────────
-GPIO1 ──── [button] ──── GND
+T7 S3 V1.1        SD module
+──────────         ─────────
+GPIO5    ────────→ MOSI
+GPIO6    ────────→ SCK
+GPIO7    ────────→ MISO
+GPIO4    ────────→ CS
+MOSFET D ────────→ VCC  (3.3 V)
+GND      ────────→ GND
 ```
 
-GPIO1 uses the ESP32-S3 internal pull-up. No external resistor required.
-Button active LOW: pressed = GPIO1 reads LOW.
+---
+
+### Album Button
+
+```
+GPIO1 ──── [ button ] ──── GND
+```
+
+GPIO1 uses the ESP32-S3 internal pull-up resistor. No external components required.
+The button reads LOW when pressed.
+
+---
 
 ### Battery
 
-Connect the 3.7 V LiPo to the T7 S3's JST battery connector. The T7 S3 includes
-an onboard charger; charge via the USB-C port. GPIO2 reads battery voltage through
-the onboard /2 voltage divider.
+Connect a 3.7 V LiPo with a JST-PH 2-pin connector to the battery port on the T7 S3.
+The board includes an onboard charging circuit; recharge via the USB-C port. Do not
+reverse the connector polarity.
+
+GPIO2 reads battery voltage through the T7 S3's onboard resistor divider (×½). The
+firmware multiplies the ADC reading by 2 to recover actual battery voltage.
+
+| Voltage | Meaning |
+|---|---|
+| > 3.9 V | Healthy |
+| 3.5 – 3.9 V | Normal discharge range |
+| 3.3 – 3.5 V | Low — red indicator shown in image corner |
+| < 3.1 V | Critical — device enters indefinite sleep |
+
+---
+
+## Pin Reference
+
+| GPIO | Function | SPI Bus | Direction |
+|---:|---|---|---|
+| 10 | Display CS | FSPI (SPI2) | Output |
+| 11 | Display MOSI | FSPI (SPI2) | Output |
+| 12 | Display SCLK | FSPI (SPI2) | Output |
+| 13 | Display DC | — | Output |
+| 14 | Display RST | — | Output |
+| 15 | Display BUSY | — | Input |
+| 4 | SD CS | HSPI (SPI3) | Output |
+| 5 | SD MOSI | HSPI (SPI3) | Output |
+| 6 | SD SCLK | HSPI (SPI3) | Output |
+| 7 | SD MISO | HSPI (SPI3) | Input |
+| 16 | MOSFET gate | — | Output |
+| 2 | Battery ADC | — | Analog input |
+| 1 | Album button | — | Input (pull-up) |
+| 17 | Onboard LED | — | **Reserved — do not use** |
+| 0 | BOOT / strapping | — | **Reserved — do not use** |
+| 19, 20 | USB D−/D+ | — | **Reserved — do not use** |
+| 33–37 | OPI PSRAM | — | **Internal — do not use** |
+
+---
+
+## SD Card Setup
+
+Format the card as **FAT32**. The following structure is required:
+
+```
+SD root/
+├── setup.json              ← WiFi credentials
+├── albumA/
+│   ├── info.txt            ← change detection file (update when adding/removing images)
+│   ├── 001_beach.bmp
+│   ├── 002_25.12_christmas.bmp
+│   └── ...                 (800×480 px, 24-bit BMP, up to 25 images)
+└── albumB/
+    ├── info.txt
+    ├── 001_mountains.bmp
+    └── ...
+```
+
+### setup.json
+
+```json
+{
+    "ssid": "YourNetworkName",
+    "password": "YourPassword"
+}
+```
+
+### Image filenames
+
+Include a date string in `DD.MM` format anywhere in the filename to pin that image
+to a specific calendar day. The firmware scans for the current date each morning and
+shows the matching image if one exists.
+
+```
+042_25.12_christmas_morning.bmp   → displayed on 25 December every year
+018_01.01_new_year.bmp            → displayed on 1 January every year
+037_holiday_beach.bmp             → no date; shown on rotation on undated days
+```
+
+### info.txt
+
+The firmware compares `info.txt` content to a stored checksum. Changing anything in
+this file (even a single character) triggers a full directory rescan and resets the
+sequential image index for that album. Update it after every batch of image changes.
+
+### Auto-generated files
+
+The firmware writes `/fileStringA.txt` and `/fileStringB.txt` to the SD card root as
+its internal file-list cache. Do not edit or delete these manually.
 
 ---
 
 ## Album Switching
 
-The device supports two independent photo albums (A and B), each stored in its own
-SD card directory.
+The device maintains two independent photo albums. Each album stores its own image
+list, current position, and file cache in NVS separately.
 
-### Switching Sequence
+### Switching sequence
 
-To switch the active album:
+The button requires a deliberate multi-step sequence to prevent accidental switches:
 
-1. **Hold** the button for ≥ 2.5 seconds, then release.
-2. **Press** the button once within 3 seconds.
-3. **Press** the button a second time within 3 seconds.
-
-Only then does the album switch. Any interrupted or timed-out sequence is silently
-cancelled with no effect.
-
-### Timing Constants (in `e-paper-esp32-frame.ino`)
-
-```cpp
-#define BUTTON_DEBOUNCE_MS        50    // Debounce window (ms)
-#define ALBUM_HOLD_DURATION_MS  2500    // Hold time to initiate (~2.5 s)
-#define ALBUM_CONFIRM_WINDOW_MS 3000    // Window for each confirm press (3 s)
-#define BUTTON_POLL_MS            10    // Polling interval (ms)
+```
+Step 1  Hold button ≥ 2.5 s   →  release
+Step 2  Press once within 3 s  →  release
+Step 3  Press again within 3 s →  album switches
 ```
 
-Adjust these to taste. The button check blocks setup for at most
-`ALBUM_HOLD_DURATION_MS + 2 × ALBUM_CONFIRM_WINDOW_MS` ≈ **8.5 seconds** before
-proceeding normally if no valid sequence is detected.
+Any step that times out or is skipped cancels the operation silently with no effect.
+A simple short press is always ignored.
 
-### Album State Persistence
-
-The active album index is stored in NVS (Non-Volatile Storage / `Preferences`) under
-the namespace `e-paper`, key `albumIndex` (0 = Album A, 1 = Album B).
-This survives deep sleep, resets, power cycles, and firmware updates.
-
-### Debug Output
-
-The firmware logs album switch progress over serial (115200 baud):
+### Serial log output (115200 baud)
 
 ```
 [BTN] Button active at boot.
@@ -174,129 +334,151 @@ The firmware logs album switch progress over serial (115200 baud):
 [BTN] *** ALBUM SWITCHED: A → B ***
 ```
 
----
+### Timing constants
 
-## SD Card Setup
+All timing values are `#define` constants near the top of `e-paper-esp32-frame.ino`:
 
-Format the SD card as FAT32. Create the following directory structure:
-
-```
-/
-├── setup.json          ← WiFi credentials (see below)
-├── albumA/
-│   ├── info.txt        ← any content; change this to trigger a file rescan
-│   ├── 001_15.06_photo1.bmp
-│   ├── 002_16.06_photo2.bmp
-│   └── ...             (up to 25 images, 800×480, 24-bit BMP)
-└── albumB/
-    ├── info.txt
-    ├── 001_15.06_image1.bmp
-    └── ...
+```cpp
+#define BUTTON_DEBOUNCE_MS        50    // Stable-state time for a valid edge (ms)
+#define ALBUM_HOLD_DURATION_MS  2500    // Required hold to begin the sequence (ms)
+#define ALBUM_CONFIRM_WINDOW_MS 3000    // Window for each confirmation press (ms)
+#define BUTTON_POLL_MS            10    // Polling interval during button checks (ms)
 ```
 
-**`setup.json`** (place in SD root):
-```json
-{
-    "ssid": "YourNetworkName",
-    "password": "YourPassword"
-}
-```
+### Persistence
 
-**File naming for date-based display:**  
-Include a date in `DD.MM` format anywhere in the filename to show that image on
-that specific calendar day (e.g. `042_25.12_christmas.bmp` → shows on 25 December).
-Files without a date tag are shown sequentially on all other days.
-
-**`info.txt`:** Any text file. The firmware uses its content as a change-detection
-hash. Update this file whenever you add or remove images to trigger a rescan.
-
----
-
-## Building & Flashing
-
-### Arduino IDE Setup
-
-1. Install Arduino IDE 2.x.
-2. Add ESP32 board package via **File → Preferences → Additional Boards Manager URLs**:
-   ```
-   https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-   ```
-3. Install **esp32 by Espressif Systems** via Board Manager.
-4. Install the **ArduinoJson** library via Library Manager (≥ v6).
-
-### Board Configuration
-
-| Setting | Value |
-|---|---|
-| Board | ESP32S3 Dev Module |
-| PSRAM | OPI PSRAM |
-| Flash Size | 16 MB |
-| Partition Scheme | Default 16 MB |
-| USB Mode | Hardware CDC and JTAG |
-| CPU Frequency | 240 MHz (reduced to 80 MHz at runtime) |
-| Upload Speed | 921600 |
-
-The `.vscode/arduino.json` already encodes these settings. Update the `port` field
-to match your system's COM port.
-
-### Upload
-
-1. Hold the BOOT button on the T7 S3 while pressing RST to enter download mode.
-2. Select the correct COM port in Arduino IDE.
-3. Click Upload.
-4. Press RST to reboot into the new firmware.
+The active album index is stored in ESP32-S3 NVS (flash) under namespace `e-paper`,
+key `albumIndex`. It survives deep sleep, hard resets, power disconnection, and
+firmware reflashing (NVS is in a separate flash partition).
 
 ---
 
 ## Image Conversion
 
-Use the included BMP Converter tool to prepare images:
+The `/bmpConverter` directory contains a Windows GUI tool to convert photos into the
+correct format (800×480, 24-bit BMP).
 
-1. Navigate to `/bmpConverter/build/exe.win-amd64-3.11/`.
-2. Run `converter.exe`.
-3. Load images (JPG, PNG, BMP).
-4. Adjust crop/rotation/scale to fill the 800×480 frame (red rectangle).
-5. Assign dates if desired.
-6. Click **Export** and choose the appropriate album directory on your SD card.
+### Running the prebuilt executable
 
-The tool exports 24-bit BMP files at 800×480 pixels with correct filenames and
-generates `info.txt` automatically.
+1. Open `bmpConverter/build/exe.win-amd64-3.11/converter.exe`
+2. Click **Bilder Laden** to load one or more images (JPG, PNG, BMP)
+3. Use the arrow keys or buttons to pan, and `+`/`−` to zoom within the 800×480 frame
+4. Use the rotation buttons to rotate 90°
+5. Optionally assign a calendar date using the date picker
+6. Click **Bilder Exportieren**, choose the album directory on your SD card
 
-To run from source:
+The tool generates correctly named BMP files and creates `info.txt` automatically.
+
+### Running from source
+
 ```sh
 cd bmpConverter
 pip install -r requirements.txt
 python converter.py
 ```
 
+Requires Python 3.9+ and Pillow.
+
+---
+
+## Build & Flash
+
+### 1. Install Arduino IDE 2.x
+
+Download from [arduino.cc](https://www.arduino.cc/en/software).
+
+### 2. Add the ESP32 board package
+
+Open **File → Preferences** and add to *Additional Boards Manager URLs*:
+
+```
+https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+```
+
+Then open **Tools → Board → Boards Manager**, search for `esp32`, and install
+**esp32 by Espressif Systems** (version 3.x recommended).
+
+### 3. Install libraries
+
+Open **Tools → Manage Libraries** and install:
+
+| Library | Minimum version |
+|---|---|
+| ArduinoJson | 6.0 |
+
+### 4. Board settings
+
+Select **Tools → Board → ESP32 Arduino → ESP32S3 Dev Module** and configure:
+
+| Setting | Value |
+|---|---|
+| PSRAM | OPI PSRAM |
+| Flash Size | 16 MB (128 Mb) |
+| Partition Scheme | Default 16MB |
+| USB Mode | Hardware CDC and JTAG |
+| Upload Speed | 921600 |
+
+These settings are also stored in `.vscode/arduino.json`. If using VS Code with the
+Arduino extension, update the `port` field to match your COM port.
+
+### 5. Upload
+
+1. Hold the **BOOT** button on the T7 S3 while briefly pressing **RST** to enter
+   download mode (the LED dims).
+2. Select the correct COM port in the IDE.
+3. Click **Upload**.
+4. After upload completes, press **RST** to boot into the new firmware.
+
 ---
 
 ## Power Budget
 
-| State | Current | Notes |
+| State | Avg. current | Duration (per day) |
 |---|---|---|
-| Deep sleep (typical) | ~20 µA | ESP32-S3 RTC running, MOSFET off |
-| Display refresh (active) | ~35–60 mA | CPU 80 MHz, SPI, WiFi |
-| WiFi connect + NTP | +80–130 mA | Added on top of base active |
-| Display writing (peak) | ~100 mA | During SPI data stream |
+| Deep sleep | ~20 µA | ~86,310 s (23 h 58 m) |
+| Boot + WiFi + NTP | ~150 mA peak | ~15–20 s |
+| Display rendering + refresh | ~60–80 mA | ~40–60 s |
+| MOSFET leakage during sleep | < 1 µA | — |
 
-**Estimated battery life (1200 mAh, one refresh per day):**
-- Active phase ≈ 60–90 seconds per day → ≈ 1.4–2.1 mAh/day
-- Sleep phase ≈ 86310 seconds/day @ 20 µA → ≈ 0.48 mAh/day
-- **Total ≈ 2–2.6 mAh/day → ~18–24 months per charge**
+**Estimated daily consumption:**
+
+```
+Sleep:    86,310 s × 0.020 mA  = 0.48 mAh
+Active:      90 s × 80 mA avg  = 2.00 mAh
+                                 ─────────
+Total per day ≈ 2.5 mAh
+```
+
+A 1200 mAh LiPo provides approximately **480 days** (~16 months) per charge under
+these conditions. Real-world life varies with WiFi connection time and temperature.
+
+To improve battery life further:
+- Move the frame closer to the router to reduce WiFi association time
+- Reduce CPU frequency below 80 MHz if SPI throughput allows
+- Consider disabling NTP sync after a successful time fetch and relying on drift-corrected RTC
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely Cause | Fix |
+| Symptom | Likely cause | Resolution |
 |---|---|---|
-| Display never updates | MOSFET not conducting | Check 100 kΩ pull-up; verify GPIO16 goes LOW in setup |
-| SD mount fails | SD wiring or CS conflict | Verify SD is on SPI3 (GPIO4–7), not sharing SPI2 with display |
-| Album switch not responding | Button wiring | Confirm button connects GPIO1 to GND; check serial for `[BTN]` messages |
-| Image colors wrong | Wrong DISPLAY_TYPE define | Ensure `#define DISPLAY_TYPE_E` is active in `epd7in3combined.h` |
-| EPD init fails | RST/BUSY wiring | Check GPIO14=RST, GPIO15=BUSY match HAT+ header pins |
-| No WiFi | setup.json missing or wrong path | Place setup.json in SD **root**, not in albumA/B |
+| Display never updates, stays blank | MOSFET not conducting | Verify GPIO16 goes LOW in `setup()`. Check 100 kΩ pull-up is from gate to Source (3.3 V), not to GND. |
+| SD mount fails on every boot | SPI bus or CS wiring | Confirm SD uses GPIO4–7 (HSPI). Do not connect SD to the same pins as the display. |
+| Display initializes but image is garbled | Incorrect SPI pins | Verify GPIO10/11/12/13/14/15 match HAT+ header pins exactly. |
+| Image colors look wrong (red/blue swapped) | Wrong `DISPLAY_TYPE` | Confirm `#define DISPLAY_TYPE_E` is active in `epd7in3combined.h` (not `DISPLAY_TYPE_F`). |
+| Album button does nothing | Wiring or wrong GPIO | Confirm button connects GPIO1 to GND. Open serial monitor — `[BTN]` lines should appear when button is held. |
+| Album switch cancels before completing | Timing too tight | Increase `ALBUM_CONFIRM_WINDOW_MS` in the sketch. |
+| No WiFi connection | Credentials or range | Check `setup.json` is in the SD **root** (not inside albumA/B). Verify SSID/password. |
+| Frame wakes but shows nothing | Empty album directory | Confirm `/albumA/` or `/albumB/` contains `.bmp` files and a valid `info.txt`. |
+| Battery reading seems off | ADC calibration | `analogReadMilliVolts()` uses eFuse calibration on S3. If values drift, check that the T7 S3 voltage divider resistors are equal (both ~1 MΩ). |
+| Upload fails in Arduino IDE | Board not in download mode | Hold BOOT, press RST, release BOOT, then upload. |
+
+---
+
+## Contributing
+
+Pull requests welcome. Please open an issue first for significant changes.
 
 ---
 
