@@ -1,0 +1,15 @@
+[wokwi]
+version = 1
+elf = "build/e-paper-esp32-frame.ino.elf"
+firmware = "build/e-paper-esp32-frame.ino.bin"
+
+# To run this simulation:
+# 1. Install the "Arduino" VS Code extension (Microsoft)
+# 2. Install the "Wokwi" VS Code extension
+# 3. Install board: esp32:esp32 via Boards Manager
+# 4. Install library: ArduinoJson via Library Manager
+# 5. Compile the sketch: Ctrl+Alt+B  (output goes to build/)
+# 6. Press F1 -> "Wokwi: Start Simulator"
+#
+# Simulated WiFi: Wokwi provides "Wokwi-GUEST" (open, real internet via proxy).
+# sdcard/setup.json must use ssid="Wokwi-GUEST" password="" to connect.

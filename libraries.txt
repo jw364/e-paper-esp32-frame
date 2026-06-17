@@ -1,0 +1,5 @@
+# Wokwi Library List
+# Used by Wokwi GitHub Actions CI to install Arduino libraries before compilation.
+# See https://docs.wokwi.com/guides/libraries
+
+ArduinoJson

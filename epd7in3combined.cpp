@@ -160,9 +160,12 @@ void Epd::SendData(unsigned char data) {
     SpiTransfer(data);
 }
 
-void Epd::EPD_7IN3F_BusyHigh(void)// If BUSYN=0 then waiting
+void Epd::EPD_7IN3F_BusyHigh(void) // Wait for display ready (BUSY = HIGH)
 {
-    while(!DigitalRead(BUSY_PIN)) {
+    // 30-second timeout: prevents infinite loop in simulation or if display is absent/stuck.
+    unsigned long deadline = millis() + 30000UL;
+    while (!DigitalRead(BUSY_PIN)) {
+        if (millis() >= deadline) break;
         DelayMs(1);
     }
 }

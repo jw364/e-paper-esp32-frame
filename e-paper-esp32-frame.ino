@@ -57,6 +57,11 @@
 #include "time_utils.h"
 #include <climits>
 
+// Fallback defines for older ESP32 Arduino core versions.
+#ifndef HSPI
+#define HSPI 1
+#endif
+
 // ── Pin definitions ───────────────────────────────────────────────────────────
 
 // AO3401 P-channel MOSFET power switch

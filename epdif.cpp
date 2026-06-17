@@ -9,6 +9,11 @@
 #include "epdif.h"
 #include <SPI.h>
 
+// Fallback defines in case an older ESP32 Arduino core omits them.
+#ifndef FSPI
+#define FSPI 0
+#endif
+
 // FSPI = 0 on ESP32-S3 (SPI2 peripheral).
 // Default pins: SCK=12, MOSI=11, MISO=13, CS=10 — matches our EPD_SCLK/EPD_MOSI.
 SPIClass epd_spi(FSPI);
