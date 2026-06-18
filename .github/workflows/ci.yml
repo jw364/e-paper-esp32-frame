@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1: Compile the sketch ──────────────────────────────────────────────
+  compile:
+    name: Compile (ESP32-S3)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Add ESP32 board URL
+        run: |
+          arduino-cli config init
+          arduino-cli config set board_manager.additional_urls \
+            "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
+
+      - name: Update board index
+        run: arduino-cli core update-index
+
+      - name: Install ESP32 board support
+        run: arduino-cli core install esp32:esp32
+
+      - name: Install ArduinoJson v6
+        run: arduino-cli lib install "ArduinoJson@6.21.5"
+
+      - name: Compile sketch
+        run: |
+          mkdir -p build
+          arduino-cli compile \
+            --fqbn "esp32:esp32:esp32s3:PSRAM=opi,PartitionScheme=app3M_fat9M_16MB,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=default,CPUFreq=240,FlashMode=qio,UploadSpeed=921600" \
+            --build-path build \
+            e-paper-esp32-frame.ino
+
+      - name: Upload compiled firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32s3
+          path: |
+            build/e-paper-esp32-frame.ino.elf
+            build/e-paper-esp32-frame.ino.bin
+
+  # ── Job 2: Wokwi simulation (album-switch scenario) ───────────────────────
+  # Requires WOKWI_CLI_TOKEN secret (free at https://wokwi.com/dashboard/ci).
+  # Without it, this job is skipped — compilation still passes.
+  simulate:
+    name: Wokwi simulation
+    runs-on: ubuntu-latest
+    needs: compile
+    if: ${{ vars.WOKWI_ENABLED == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download compiled firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-esp32s3
+          path: build
+
+      - name: Run album-switch scenario
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          timeout: 30000

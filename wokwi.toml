@@ -2,14 +2,36 @@
 version = 1
 elf = "build/e-paper-esp32-frame.ino.elf"
 firmware = "build/e-paper-esp32-frame.ino.bin"
+scenario = "scenario.yaml"
 
-# To run this simulation:
-# 1. Install the "Arduino" VS Code extension (Microsoft)
-# 2. Install the "Wokwi" VS Code extension
-# 3. Install board: esp32:esp32 via Boards Manager
-# 4. Install library: ArduinoJson via Library Manager
-# 5. Compile the sketch: Ctrl+Alt+B  (output goes to build/)
-# 6. Press F1 -> "Wokwi: Start Simulator"
+# ── How to compile before simulating ──────────────────────────────────────────
 #
-# Simulated WiFi: Wokwi provides "Wokwi-GUEST" (open, real internet via proxy).
-# sdcard/setup.json must use ssid="Wokwi-GUEST" password="" to connect.
+# Option A — VS Code (Arduino extension + Wokwi extension):
+#   1. Install "Arduino" (Microsoft) and "Wokwi Simulator" extensions in VS Code
+#   2. Boards Manager: install esp32:esp32 (v3.x)
+#   3. Library Manager: install ArduinoJson (v6.x)
+#   4. Ctrl+Alt+B  → compiles to build/
+#   5. F1 → "Wokwi: Start Simulator"
+#
+# Option B — arduino-cli (command line):
+#   arduino-cli compile \
+#     --fqbn "esp32:esp32:esp32s3:PSRAM=opi,PartitionScheme=app3M_fat9M_16MB,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=default,CPUFreq=240,FlashMode=qio,UploadSpeed=921600" \
+#     --build-path build \
+#     e-paper-esp32-frame.ino
+#
+# Option C — GitHub Actions CI (see .github/workflows/ci.yml):
+#   Compiles automatically on every push; Wokwi CI job runs if WOKWI_ENABLED=true
+#   and WOKWI_CLI_TOKEN secret is set (free token at https://wokwi.com/dashboard/ci).
+#
+# ── Simulated WiFi ─────────────────────────────────────────────────────────────
+# Wokwi provides "Wokwi-GUEST" (open AP, real internet via proxy).
+# sdcard/setup.json is pre-configured with that SSID.
+#
+# ── Simulated SD card ──────────────────────────────────────────────────────────
+# sdcard/ directory is served as the SD card filesystem root.
+# Contains setup.json, albumA/info.txt, albumA/test.bmp, albumB/info.txt.
+#
+# ── Simulated display BUSY pin ─────────────────────────────────────────────────
+# GPIO15 (BUSY) is pulled HIGH via 10 kΩ resistor to 3V3 in diagram.json.
+# This makes EPD_7IN3F_BusyHigh() return immediately (no physical display needed).
+# A 30-second software timeout in epd7in3combined.cpp acts as an additional safety net.
