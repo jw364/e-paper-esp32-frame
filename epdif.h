@@ -16,7 +16,7 @@
 #ifndef EPDIF_H
 #define EPDIF_H
 
-#include <arduino.h>
+#include <Arduino.h>
 
 // ── Display SPI (VSPI / SPI2) ─────────────────────────────────────────────────
 #define EPD_SCLK    18    // VSPI SCK  (GPIO 6–11 are reserved for flash on ESP32)
