@@ -18,6 +18,9 @@ jobs:
       - name: Install arduino-cli
         uses: arduino/setup-arduino-cli@v2
 
+      - name: Show arduino-cli version
+        run: arduino-cli version
+
       - name: Add ESP32 board URL
         run: |
           arduino-cli config init
@@ -27,16 +30,20 @@ jobs:
       - name: Update board index
         run: arduino-cli core update-index
 
-      - name: Install ESP32 board support
-        run: arduino-cli core install esp32:esp32
+      - name: Install ESP32 board support (pinned 3.3.10)
+        run: arduino-cli core install esp32:esp32@3.3.10
 
       - name: Install ArduinoJson v6
         run: arduino-cli lib install "ArduinoJson@6.21.5"
+
+      - name: Verify board FQBN
+        run: arduino-cli board details --fqbn "esp32:esp32:dfrobot_firebeetle2_esp32e"
 
       - name: Compile sketch
         run: |
           mkdir -p build
           arduino-cli compile \
+            --verbose \
             --fqbn "esp32:esp32:dfrobot_firebeetle2_esp32e:PSRAM=disabled,PartitionScheme=default,CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600" \
             --build-path build \
             e-paper-esp32-frame.ino
