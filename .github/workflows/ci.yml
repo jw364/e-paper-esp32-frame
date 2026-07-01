@@ -46,7 +46,15 @@ jobs:
             --verbose \
             --fqbn "esp32:esp32:dfrobot_firebeetle2_esp32e:PSRAM=disabled,PartitionScheme=default,CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600" \
             --build-path build \
-            e-paper-esp32-frame.ino
+            e-paper-esp32-frame.ino 2>&1 | tee compile_log.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload compile log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-log
+          path: compile_log.txt
 
       - name: Upload compiled firmware
         uses: actions/upload-artifact@v4
