@@ -1,22 +1,23 @@
 /**
- * epdif.cpp — EPD SPI interface implementation for ESP32-S3
+ * epdif.cpp — EPD SPI interface implementation for FireBeetle 2 ESP32-E
  *
- * Uses FSPI (SPI2, bus index 0) which is dedicated to the e-paper display.
- * The SD card uses a separate HSPI (SPI3, bus index 1) bus to eliminate
- * the pin-sharing conflict present in the original FireBeetle design.
+ * Uses VSPI (SPI2 on original ESP32) dedicated to the e-paper display.
+ * GPIO 6–11 are reserved for internal flash on ESP32 and cannot be used.
+ * The SD card uses a separate HSPI bus to keep bus loads independent.
  */
 
 #include "epdif.h"
 #include <SPI.h>
 
-// Fallback defines in case an older ESP32 Arduino core omits them.
-#ifndef FSPI
-#define FSPI 0
+// Fallback for older Arduino-ESP32 cores that may not define VSPI.
+// On ESP32 (original) with core 2.x / 3.x, VSPI = 3 (SPI2 peripheral).
+#ifndef VSPI
+#define VSPI 3
 #endif
 
-// FSPI = 0 on ESP32-S3 (SPI2 peripheral).
-// Default pins: SCK=12, MOSI=11, MISO=13, CS=10 — matches our EPD_SCLK/EPD_MOSI.
-SPIClass epd_spi(FSPI);
+// VSPI (SPI2 peripheral on original ESP32).
+// Pins are set explicitly in IfInit() via begin(sck, miso, mosi, cs).
+SPIClass epd_spi(VSPI);
 
 EpdIf::EpdIf() {}
 EpdIf::~EpdIf() {}
@@ -46,7 +47,7 @@ int EpdIf::IfInit(void) {
     pinMode(BUSY_PIN, INPUT);
     digitalWrite(CS_PIN, HIGH);  // Deselect display
 
-    // Begin FSPI with explicit pin assignment; no MISO needed (display is write-only)
+    // Begin VSPI with explicit pin assignment; no MISO needed (display is write-only)
     epd_spi.begin(EPD_SCLK, /*MISO=*/-1, EPD_MOSI, /*CS=*/-1);
     // 4 MHz is conservative and reliable over HAT+ wiring; display supports up to ~20 MHz
     epd_spi.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));

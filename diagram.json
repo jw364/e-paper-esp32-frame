@@ -4,7 +4,7 @@
   "editor": "wokwi",
   "parts": [
     {
-      "type": "wokwi-esp32-s3-devkitc-1",
+      "type": "wokwi-esp32-devkit-v1",
       "id": "esp",
       "top": 0,
       "left": 0,
@@ -35,18 +35,18 @@
     }
   ],
   "connections": [
-    ["btn:1.l", "esp:GPIO1",  "green", ["h0"]],
-    ["btn:2.l", "esp:GND.1", "black", ["h0"]],
+    ["btn:1.l", "esp:GPIO22", "green", ["h0"]],
+    ["btn:2.l", "esp:GND.1",  "black", ["h0"]],
 
-    ["r_busy:1", "esp:GPIO15", "orange", ["h0"]],
+    ["r_busy:1", "esp:GPIO25", "orange", ["h0"]],
     ["r_busy:2", "esp:3V3",    "red",    ["h0"]],
 
-    ["sd:SCK",  "esp:GPIO6",  "purple", ["h0"]],
-    ["sd:MOSI", "esp:GPIO5",  "blue",   ["h0"]],
-    ["sd:MISO", "esp:GPIO7",  "cyan",   ["h0"]],
-    ["sd:CS",   "esp:GPIO4",  "yellow", ["h0"]],
-    ["sd:VCC",  "esp:3V3",   "red",    ["h0"]],
-    ["sd:GND",  "esp:GND.1", "black",  ["h0"]]
+    ["sd:SCK",  "esp:GPIO14", "purple", ["h0"]],
+    ["sd:MOSI", "esp:GPIO13", "blue",   ["h0"]],
+    ["sd:MISO", "esp:GPIO4",  "cyan",   ["h0"]],
+    ["sd:CS",   "esp:GPIO33", "yellow", ["h0"]],
+    ["sd:VCC",  "esp:3V3",    "red",    ["h0"]],
+    ["sd:GND",  "esp:GND.1",  "black",  ["h0"]]
   ],
   "serialMonitor": {
     "display": "always"

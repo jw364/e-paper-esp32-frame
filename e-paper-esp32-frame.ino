@@ -2,33 +2,36 @@
  * e-paper-esp32-frame.ino
  *
  * Target hardware:
- *   MCU      : LILYGO T7 S3 V1.1 (ESP32-S3, 8 MB OPI PSRAM, 16 MB Flash)
+ *   MCU      : DFRobot FireBeetle 2 ESP32-E (ESP32, 4 MB Flash, no PSRAM)
  *   Display  : Waveshare 7.3" Spectra 6 (E6) Full-Color E-Paper (800×480)
  *   Driver   : Waveshare HAT+ Driver Board
- *   Storage  : MicroSD card module
+ *   Storage  : MicroSD card module (SPI)
  *   Power SW : AO3401 P-channel MOSFET (high-side, 3.3 V rail)
- *   Battery  : 3.7 V 1200 mAh LiPo
+ *   Battery  : 3.7 V 1000 mAh LiPo
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * PIN MAP
  * ─────────────────────────────────────────────────────────────────────────────
  *  GPIO  Purpose
  *  ────  ──────────────────────────────────────────────────────────────────────
- *   10   EPD CS          (SPI2 FSPI)
- *   11   EPD MOSI/DIN    (SPI2 FSPI)
- *   12   EPD SCLK        (SPI2 FSPI)
- *   13   EPD DC
- *   14   EPD RST
- *   15   EPD BUSY
- *    4   SD CS           (SPI3 HSPI)
- *    5   SD MOSI         (SPI3 HSPI)
- *    6   SD SCLK         (SPI3 HSPI)
- *    7   SD MISO         (SPI3 HSPI)
- *   16   MOSFET gate     (LOW = peripherals ON; HIGH = peripherals OFF)
- *    2   Battery ADC     (onboard /2 voltage divider → analogReadMilliVolts × 2)
- *    1   Album button    (active LOW; internal pull-up enabled)
- *   17   Onboard LED     (do not use for other functions)
+ *    5   EPD CS          (VSPI / SPI2)  ← strapping pin; HIGH at boot is safe
+ *   18   EPD SCLK        (VSPI / SPI2)
+ *   23   EPD MOSI/DIN    (VSPI / SPI2)
+ *   27   EPD DC
+ *   26   EPD RST
+ *   25   EPD BUSY
+ *   33   SD CS           (HSPI / SPI1, custom pins)
+ *   13   SD MOSI         (HSPI / SPI1)
+ *   14   SD SCLK         (HSPI / SPI1)
+ *    4   SD MISO         (HSPI / SPI1)  ← avoids GPIO12 strapping pin
+ *   21   MOSFET gate     (LOW = peripherals ON; HIGH = peripherals OFF)
+ *   36   Battery ADC     (onboard /2 voltage divider → analogReadMilliVolts × 2)
+ *   22   Album button    (active LOW; internal pull-up enabled)
+ *  6–11  RESERVED        (internal SPI flash — never use)
  *    0   BOOT button     (do not use; strapping pin)
+ *    1   UART0 TX        (do not use; used by Serial)
+ *    3   UART0 RX        (do not use; used by Serial)
+ *   12   Flash strapping (do not drive HIGH during/after boot)
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * SD CARD DIRECTORY STRUCTURE
@@ -40,7 +43,7 @@
  *   /fileStringA.txt ← auto-generated; do not edit
  *   /fileStringB.txt ← auto-generated; do not edit
  *
- * ALBUM SWITCHING (button on GPIO1)
+ * ALBUM SWITCHING (button on GPIO22)
  *   1. Hold button > ALBUM_HOLD_DURATION_MS (2 s)
  *   2. Release
  *   3. Press button TWICE within ALBUM_CONFIRM_WINDOW_MS (5 s shared window)
@@ -57,30 +60,26 @@
 #include "time_utils.h"
 #include <climits>
 
-// Fallback defines for older ESP32 Arduino core versions.
-#ifndef HSPI
-#define HSPI 1
-#endif
-
 // ── Pin definitions ───────────────────────────────────────────────────────────
 
 // AO3401 P-channel MOSFET power switch
 // LOW  = gate pulled toward GND → Vgs negative → MOSFET ON  → peripherals powered
 // HIGH = gate at Vsource (3.3 V) → Vgs = 0 → MOSFET OFF → peripherals unpowered
-// External: 10 kΩ series resistor gate→GPIO16; 100 kΩ pull-up gate→3.3 V
-#define MOSFET_PIN      16
+// External: 10 kΩ series resistor gate→GPIO21; 100 kΩ pull-up gate→3.3 V
+#define MOSFET_PIN      21
 
-// SD card SPI (HSPI / SPI3, bus index 1 on ESP32-S3)
-#define SD_SCLK_PIN      6
-#define SD_MISO_PIN      7
-#define SD_MOSI_PIN      5
-#define SD_CS_PIN        4
+// SD card SPI (HSPI, custom pins — GPIO 6–11 are reserved for flash on ESP32)
+#define SD_SCLK_PIN     14
+#define SD_MISO_PIN      4    // Remapped: avoids GPIO12 (flash-voltage strapping pin)
+#define SD_MOSI_PIN     13
+#define SD_CS_PIN       33
 
-// Battery ADC — T7 S3 onboard /2 divider; ADC1 channel, safe with WiFi
-#define BAT_ADC_PIN      2
+// Battery ADC — FireBeetle 2 onboard /2 divider on GPIO36 (ADC1 CH0, input-only)
+// Verify this matches your specific board revision; some use GPIO34 or GPIO35.
+#define BAT_ADC_PIN     36
 
 // Album switch button — active LOW, internal pull-up
-#define BUTTON_PIN       1
+#define BUTTON_PIN      22
 
 // ── Album-switch button timing constants ─────────────────────────────────────
 #define BUTTON_DEBOUNCE_MS        50    // Stable-state time required for a valid edge (ms)
@@ -91,7 +90,7 @@
 // ── Global objects ────────────────────────────────────────────────────────────
 Preferences preferences;
 Epd         epd;
-SPIClass    sd_spi(HSPI);   // HSPI = SPI3, bus index 1 on ESP32-S3
+SPIClass    sd_spi(HSPI);   // HSPI peripheral on ESP32; custom pins set in begin()
 
 unsigned long delta;                  // millis() at wake; used for sleep calculation
 unsigned long deltaSinceTimeObtain;   // millis() after NTP sync
@@ -149,8 +148,9 @@ uint32_t read32(fs::File &f) {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Battery voltage (ESP32-S3 — no deprecated esp_adc_cal required)
-// analogReadMilliVolts() uses eFuse-calibrated ADC on S3 automatically.
+// Battery voltage (ESP32 — analogReadMilliVolts() available in core 2.x+)
+// Uses ADC1 (GPIO36) which is safe during WiFi. The onboard /2 divider means
+// actual battery voltage = ADC millivolt reading × 2.
 // ═════════════════════════════════════════════════════════════════════════════
 
 float readBattery() {
@@ -712,13 +712,13 @@ void setup() {
     Serial.println("Cold boot.");
   }
 
-  // Release hold on MOSFET_PIN set before the previous deep sleep
+  // Release GPIO hold on MOSFET_PIN that was latched before the previous deep sleep
   gpio_hold_dis((gpio_num_t)MOSFET_PIN);
 
-  // Drive MOSFET LOW → peripherals (SD card + HAT+ + display) powered ON
+  // Drive MOSFET LOW → peripherals (HAT+ display + SD card) powered ON
   pinMode(MOSFET_PIN, OUTPUT);
   digitalWrite(MOSFET_PIN, LOW);
-  delay(20);  // Allow 3.3 V rail to stabilise across all peripherals
+  delay(50);  // Allow 3.3 V rail to stabilise (FireBeetle 2 has higher capacitance)
 
   // Configure album button before any blocking waits
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -728,7 +728,7 @@ void setup() {
   // reads and writes albumIndex.
   checkAndHandleAlbumButton();
 
-  // ── SD card (HSPI / SPI3) ─────────────────────────────────────────────────
+  // ── SD card (HSPI, custom pins) ───────────────────────────────────────────
   sd_spi.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
   if (!SD.begin(SD_CS_PIN, sd_spi)) {
     Serial.println("SD mount failed — hibernating.");

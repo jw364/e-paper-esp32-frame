@@ -9,7 +9,7 @@ on:
 jobs:
   # ── Job 1: Compile the sketch ──────────────────────────────────────────────
   compile:
-    name: Compile (ESP32-S3)
+    name: Compile (FireBeetle 2 ESP32-E)
     runs-on: ubuntu-latest
 
     steps:
@@ -37,14 +37,14 @@ jobs:
         run: |
           mkdir -p build
           arduino-cli compile \
-            --fqbn "esp32:esp32:esp32s3:PSRAM=opi,PartitionScheme=app3M_fat9M_16MB,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=default,CPUFreq=240,FlashMode=qio,UploadSpeed=921600" \
+            --fqbn "esp32:esp32:dfrobot_firebeetle2_esp32e:PSRAM=disabled,PartitionScheme=default,CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600" \
             --build-path build \
             e-paper-esp32-frame.ino
 
       - name: Upload compiled firmware
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-esp32s3
+          name: firmware-esp32e
           path: |
             build/e-paper-esp32-frame.ino.elf
             build/e-paper-esp32-frame.ino.bin
@@ -64,7 +64,7 @@ jobs:
       - name: Download compiled firmware
         uses: actions/download-artifact@v4
         with:
-          name: firmware-esp32s3
+          name: firmware-esp32e
           path: build
 
       - name: Run album-switch scenario

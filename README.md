@@ -1,4 +1,4 @@
-# E-Paper ESP32-S3 Picture Frame
+# E-Paper ESP32 Picture Frame
 
 A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 6 full-color e-paper display. The frame wakes once a day, fetches the correct time over WiFi, renders the next photo from an SD card using Floyd–Steinberg dithering, updates the display, and returns to deep sleep — all in under 90 seconds. The e-ink panel holds the image indefinitely with zero power draw until the next update.
 
@@ -37,8 +37,8 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 - **Floyd–Steinberg dithering** — converts full-color photos to the 6-color palette with smooth gradients and no banding
 - **Date-aware scheduling** — assign specific images to specific calendar dates; fall back to sequential rotation on undated days
 - **Two switchable albums** — hold ≥2 s then press twice within a 5-second window to switch between Album A and Album B; album selection persists across power cycles
-- **Ultra-low power** — ~20 µA deep sleep; estimated 18–24 months on a 1200 mAh LiPo with one refresh per day
-- **MOSFET power gating** — AO3401 P-channel MOSFET cuts power to the display and SD card during sleep
+- **Ultra-low power** — ~20 µA deep sleep; estimated 12–18 months on a 1000 mAh LiPo with one refresh per day
+- **MOSFET power gating** — AO3401 P-channel MOSFET cuts power to the display HAT+ and SD card during sleep
 - **Battery monitor** — low-battery indicator in the image corner; indefinite sleep on critical voltage
 - **WiFi time sync** — NTP-synchronized scheduling; graceful fallback if WiFi is unavailable
 - **Included BMP converter** — Windows GUI tool to crop, rotate, and export photos to the correct format
@@ -49,14 +49,17 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 
 | Component | Specification |
 |---|---|
-| [LILYGO T7 S3 V1.1](https://www.lilygo.cc/products/t7-s3) | ESP32-S3, 8 MB OPI PSRAM, 16 MB Flash, onboard LiPo charger |
+| [DFRobot FireBeetle 2 ESP32-E](https://www.dfrobot.com/product-2195.html) | ESP32, 4 MB Flash, onboard LiPo charger |
 | [Waveshare 7.3" E-Paper HAT (E)](https://www.waveshare.com/product/displays/e-paper/epaper-1/7.3inch-e-paper-hat-e.htm) | Spectra 6 E6 panel, 800×480, 6-color, SPI, includes HAT+ driver board |
 | MicroSD card module | 3.3 V SPI type |
 | AO3401 P-channel MOSFET | SOT-23 or through-hole breakout |
 | 10 kΩ resistor | MOSFET gate series resistor |
 | 100 kΩ resistor | MOSFET gate pull-up |
 | Momentary push button | Album switch |
-| 3.7 V 1200 mAh LiPo battery | With JST-PH 2-pin connector to match T7 S3 |
+| 3.7 V 1000 mAh LiPo battery | With JST-PH 2-pin connector to match FireBeetle 2 |
+
+> **Important — GPIO restrictions on ESP32:**
+> GPIO 6–11 are internally connected to the SPI flash chip and **cannot be used** for any other purpose. The pin assignments in this project deliberately avoid all of those pins.
 
 ---
 
@@ -66,7 +69,7 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 Boot / Timer wakeup
        │
        ▼
-Release GPIO hold → drive MOSFET LOW → power on peripherals
+Release GPIO hold → drive MOSFET LOW (GPIO21) → power on peripherals
        │
        ▼
 Check album button (up to ~8 s if held; instant skip otherwise)
@@ -84,11 +87,11 @@ Stream BMP from SD → Floyd–Steinberg dither → send pixels to display
 TurnOnDisplay (triggers e-ink refresh, ~30–40 s) → Sleep display
        │
        ▼
-Drive MOSFET HIGH → power off peripherals
+Drive MOSFET HIGH (GPIO21) → power off peripherals
 gpio_hold_en → deep sleep until next scheduled time (target: 10:00 AM daily)
 ```
 
-The display retains the image without any power after the firmware calls `Sleep()`. The MOSFET cuts the 3.3 V rail to both the HAT+ and the SD card module during deep sleep, ensuring the only quiescent draw is the ESP32-S3 RTC (~20 µA).
+The display retains the image without any power after the firmware calls `Sleep()`. The MOSFET cuts the 3.3 V rail to both the HAT+ and the SD card module during deep sleep, ensuring the only quiescent draw is the ESP32 RTC (~20 µA).
 
 ---
 
@@ -97,29 +100,29 @@ The display retains the image without any power after the firmware calls `Sleep(
 ### Full System Diagram
 
 ```
-                    ┌─────────────────────────────────────┐
-                    │         LILYGO T7 S3 V1.1           │
-                    │                                     │
-  LiPo ─────────── │ BAT    GPIO2 ──── [1MΩ]─┬─[1MΩ]─── │ ─── VBAT
-                    │                         └────────── │ (battery divider)
-                    │       GPIO16 ──────────────────────── MOSFET gate
-                    │        GPIO1 ──────────────────────── Album button ── GND
-                    │                                     │
-                    │  FSPI  GPIO10 (CS)                  │
-                    │        GPIO11 (MOSI) ───────────────── HAT+ display SPI
-                    │        GPIO12 (SCLK)                │
-                    │        GPIO13 (DC)                  │
-                    │        GPIO14 (RST)                 │
-                    │        GPIO15 (BUSY)                │
-                    │                                     │
-                    │  HSPI  GPIO4  (CS)                  │
-                    │        GPIO5  (MOSI) ───────────────── SD card module
-                    │        GPIO6  (SCLK)                │
-                    │        GPIO7  (MISO)                │
-                    │                                     │
-                    │        3.3V ─── MOSFET source       │
-                    │        GND  ─── HAT+ GND, SD GND    │
-                    └─────────────────────────────────────┘
+                    ┌──────────────────────────────────────────┐
+                    │        FireBeetle 2 ESP32-E              │
+                    │                                          │
+  LiPo ─────────── │ BAT    GPIO36 ──── [100kΩ]─┬─[100kΩ]─── │ ─── VBAT
+                    │                            └──────────── │ (battery divider)
+                    │        GPIO21 ──────────────────────────── MOSFET gate
+                    │        GPIO22 ──────────────────────────── Album button ── GND
+                    │                                          │
+                    │  VSPI  GPIO5  (CS)                       │
+                    │        GPIO23 (MOSI) ────────────────────── HAT+ display SPI
+                    │        GPIO18 (SCLK)                     │
+                    │        GPIO27 (DC)                       │
+                    │        GPIO26 (RST)                      │
+                    │        GPIO25 (BUSY)                     │
+                    │                                          │
+                    │  HSPI  GPIO33 (CS)                       │
+                    │        GPIO13 (MOSI) ────────────────────── SD card module
+                    │        GPIO14 (SCLK)                     │
+                    │        GPIO4  (MISO)                     │
+                    │                                          │
+                    │        3.3V ─── MOSFET source            │
+                    │        GND  ─── HAT+ GND, SD GND        │
+                    └──────────────────────────────────────────┘
 
   MOSFET drain ──── HAT+ 3.3V pin
                └─── SD module VCC
@@ -134,25 +137,25 @@ low (toward GND), it conducts and powers the peripherals. When its gate is at so
 potential (3.3 V), it is off.
 
 ```
-   T7 S3 3.3 V ────────────────────────────┬──────── AO3401  S (source)
-                                            │
-                                          [100 kΩ]  ← pull-up: holds gate HIGH
-                                            │         (MOSFET off) during boot
-   GPIO16 ──────────── [10 kΩ] ────────────┤──────── AO3401  G (gate)
-                        series                          ↓ Vgs ≈ −3.3 V when GPIO16 LOW
-                                                        → MOSFET conducts
-                                                 AO3401  D (drain)
-                                                        │
-                          ┌─────────────────────────────┤
-                          │                             │
-                   HAT+ 3.3 V pin                SD module VCC
+   FireBeetle 3.3 V ───────────────────────────┬──────── AO3401  S (source)
+                                               │
+                                             [100 kΩ]  ← pull-up: holds gate HIGH
+                                               │         (MOSFET off) during boot
+   GPIO21 ──────────── [10 kΩ] ───────────────┤──────── AO3401  G (gate)
+                         series                            ↓ Vgs ≈ −3.3 V when GPIO21 LOW
+                                                           → MOSFET conducts
+                                                    AO3401  D (drain)
+                                                           │
+                           ┌───────────────────────────────┤
+                           │                               │
+                    HAT+ 3.3 V pin                 SD module VCC
 ```
 
-**100 kΩ pull-up purpose:** GPIO16 is high-impedance for a brief moment during boot
+**100 kΩ pull-up purpose:** GPIO21 is high-impedance for a brief moment during boot
 before the firmware configures it as an output. Without this resistor, the gate would
 float and the MOSFET could conduct unpredictably. The pull-up biases the gate to source
 potential (Vgs = 0) by default, keeping the MOSFET off until the firmware explicitly
-drives GPIO16 LOW.
+drives GPIO21 LOW.
 
 **10 kΩ series resistor purpose:** Limits the peak gate-charge current on transitions
 and suppresses ringing on fast edges.
@@ -161,19 +164,19 @@ and suppresses ringing on fast edges.
 
 ### Display HAT+ Connection
 
-Connect jumper wires from the T7 S3 to the Waveshare HAT+ 40-pin header. The e-paper
-panel itself attaches to the HAT+ via its FPC ribbon cable — no additional wiring
-needed between panel and HAT+.
+Connect jumper wires from the FireBeetle 2 to the Waveshare HAT+ 40-pin header. The
+e-paper panel itself attaches to the HAT+ via its FPC ribbon cable — no additional
+wiring needed between panel and HAT+.
 
 ```
-T7 S3 V1.1        HAT+ 40-pin header (BCM numbering)
-──────────         ─────────────────────────────────
-GPIO12   ────────→ SCLK   pin 23  (BCM 11)
-GPIO11   ────────→ MOSI   pin 19  (BCM 10)
-GPIO10   ────────→ CE0    pin 24  (BCM  8)   ← SPI chip select
-GPIO13   ────────→ DC     pin 22  (BCM 25)
-GPIO14   ────────→ RST    pin 11  (BCM 17)
-GPIO15   ────────→ BUSY   pin 18  (BCM 24)
+FireBeetle 2       HAT+ 40-pin header (BCM numbering)
+────────────        ─────────────────────────────────
+GPIO18   ────────→ SCLK   pin 23  (BCM 11)
+GPIO23   ────────→ MOSI   pin 19  (BCM 10)
+GPIO5    ────────→ CE0    pin 24  (BCM  8)   ← SPI chip select
+GPIO27   ────────→ DC     pin 22  (BCM 25)
+GPIO26   ────────→ RST    pin 11  (BCM 17)
+GPIO25   ────────→ BUSY   pin 18  (BCM 24)
 MOSFET D ────────→ 3.3V   pin  1
 GND      ────────→ GND    pin  6
 ```
@@ -182,42 +185,50 @@ GND      ────────→ GND    pin  6
 
 ### SD Card Connection
 
-The SD card uses a completely separate SPI bus (SPI3 / HSPI) from the display (SPI2 /
-FSPI). This eliminates the pin-sharing conflict present in the original FireBeetle
-design.
+The SD card uses a completely separate SPI bus (HSPI) from the display (VSPI). This
+eliminates any pin-sharing conflict and allows both devices to operate independently.
 
 ```
-T7 S3 V1.1        SD module
-──────────         ─────────
-GPIO5    ────────→ MOSI
-GPIO6    ────────→ SCK
-GPIO7    ────────→ MISO
-GPIO4    ────────→ CS
+FireBeetle 2       SD module
+────────────        ─────────
+GPIO13   ────────→ MOSI
+GPIO14   ────────→ SCK
+GPIO4    ────────→ MISO
+GPIO33   ────────→ CS
 MOSFET D ────────→ VCC  (3.3 V)
 GND      ────────→ GND
 ```
+
+> **Note on GPIO4 (MISO):** The HSPI peripheral default MISO is GPIO12, but GPIO12 is
+> a flash-voltage strapping pin on ESP32 that **must remain LOW at boot** for 3.3 V
+> flash operation. Remapping MISO to GPIO4 avoids this constraint entirely.
 
 ---
 
 ### Album Button
 
 ```
-GPIO1 ──── [ button ] ──── GND
+GPIO22 ──── [ button ] ──── GND
 ```
 
-GPIO1 uses the ESP32-S3 internal pull-up resistor. No external components required.
+GPIO22 uses the ESP32 internal pull-up resistor. No external components required.
 The button reads LOW when pressed.
 
 ---
 
 ### Battery
 
-Connect a 3.7 V LiPo with a JST-PH 2-pin connector to the battery port on the T7 S3.
-The board includes an onboard charging circuit; recharge via the USB-C port. Do not
-reverse the connector polarity.
+Connect a 3.7 V LiPo with a JST-PH 2-pin connector to the battery port on the
+FireBeetle 2. The board includes an onboard charging circuit; recharge via USB-C.
+Do not reverse the connector polarity.
 
-GPIO2 reads battery voltage through the T7 S3's onboard resistor divider (×½). The
-firmware multiplies the ADC reading by 2 to recover actual battery voltage.
+GPIO36 reads battery voltage through the FireBeetle 2's onboard resistor divider (×½).
+The firmware multiplies the ADC reading by 2 to recover actual battery voltage.
+
+> **Board revision note:** The battery ADC pin may vary across FireBeetle 2 board
+> revisions. If battery readings are always 0.0 V, try GPIO34 or GPIO35 by changing
+> `BAT_ADC_PIN` in `e-paper-esp32-frame.ino`. Check the schematic for your board
+> revision on the DFRobot wiki.
 
 | Voltage | Meaning |
 |---|---|
@@ -232,23 +243,24 @@ firmware multiplies the ADC reading by 2 to recover actual battery voltage.
 
 | GPIO | Function | SPI Bus | Direction |
 |---:|---|---|---|
-| 10 | Display CS | FSPI (SPI2) | Output |
-| 11 | Display MOSI | FSPI (SPI2) | Output |
-| 12 | Display SCLK | FSPI (SPI2) | Output |
-| 13 | Display DC | — | Output |
-| 14 | Display RST | — | Output |
-| 15 | Display BUSY | — | Input |
-| 4 | SD CS | HSPI (SPI3) | Output |
-| 5 | SD MOSI | HSPI (SPI3) | Output |
-| 6 | SD SCLK | HSPI (SPI3) | Output |
-| 7 | SD MISO | HSPI (SPI3) | Input |
-| 16 | MOSFET gate | — | Output |
-| 2 | Battery ADC | — | Analog input |
-| 1 | Album button | — | Input (pull-up) |
-| 17 | Onboard LED | — | **Reserved — do not use** |
+| 5 | Display CS | VSPI | Output |
+| 18 | Display SCLK | VSPI | Output |
+| 23 | Display MOSI | VSPI | Output |
+| 27 | Display DC | — | Output |
+| 26 | Display RST | — | Output |
+| 25 | Display BUSY | — | Input |
+| 33 | SD CS | HSPI | Output |
+| 13 | SD MOSI | HSPI | Output |
+| 14 | SD SCLK | HSPI | Output |
+| 4 | SD MISO | HSPI | Input |
+| 21 | MOSFET gate | — | Output |
+| 36 | Battery ADC | — | Analog input |
+| 22 | Album button | — | Input (pull-up) |
+| 6–11 | Internal flash | — | **Reserved — do not use** |
 | 0 | BOOT / strapping | — | **Reserved — do not use** |
-| 19, 20 | USB D−/D+ | — | **Reserved — do not use** |
-| 33–37 | OPI PSRAM | — | **Internal — do not use** |
+| 1 | UART0 TX | — | **Reserved — do not use** |
+| 3 | UART0 RX | — | **Reserved — do not use** |
+| 12 | Flash strapping | — | **Do not drive HIGH after boot** |
 
 ---
 
@@ -368,7 +380,7 @@ All timing values are `#define` constants near the top of `e-paper-esp32-frame.i
 
 ### Persistence
 
-The active album index is stored in ESP32-S3 NVS (flash) under namespace `e-paper`,
+The active album index is stored in ESP32 NVS (flash) under namespace `e-paper`,
 key `albumIndex`. It survives deep sleep, hard resets, power disconnection, and
 firmware reflashing (NVS is in a separate flash partition).
 
@@ -384,7 +396,7 @@ hardware.
 
 | File | Purpose |
 |---|---|
-| `diagram.json` | Wokwi hardware layout: ESP32-S3 + pushbutton + SD card + BUSY pull-up |
+| `diagram.json` | Wokwi hardware layout: ESP32 DevKit + pushbutton + SD card + BUSY pull-up |
 | `wokwi.toml` | Points Wokwi to the compiled ELF/BIN in `build/` |
 | `libraries.txt` | ArduinoJson dependency for Wokwi GitHub Actions CI |
 | `sdcard/` | SD card filesystem root served to the simulation |
@@ -399,7 +411,7 @@ hardware.
 4. Compile the sketch with **Ctrl+Alt+B**. Output lands in `build/`.
 5. Press **F1 → Wokwi: Start Simulator** (or `Ctrl+Shift+P`).
 
-> The BUSY pin (GPIO15) is wired to 3.3 V via a 10 kΩ resistor in `diagram.json`.
+> The BUSY pin (GPIO25) is wired to 3.3 V via a 10 kΩ resistor in `diagram.json`.
 > This simulates "display always ready", so all `EPD_7IN3F_BusyHigh()` calls return
 > immediately. A 30-second software timeout is also present as a safety net.
 
@@ -488,14 +500,14 @@ Open **Tools → Manage Libraries** and install:
 
 ### 4. Board settings
 
-Select **Tools → Board → ESP32 Arduino → ESP32S3 Dev Module** and configure:
+Select **Tools → Board → ESP32 Arduino → DFRobot FireBeetle-2-ESP32E** and configure:
 
 | Setting | Value |
 |---|---|
-| PSRAM | OPI PSRAM |
-| Flash Size | 16 MB (128 Mb) |
-| Partition Scheme | Default 16MB |
-| USB Mode | Hardware CDC and JTAG |
+| PSRAM | Disabled |
+| Flash Size | 4 MB (32 Mb) |
+| Partition Scheme | Default 4MB with spiffs |
+| CPU Frequency | 240 MHz |
 | Upload Speed | 921600 |
 
 These settings are also stored in `.vscode/arduino.json`. If using VS Code with the
@@ -503,11 +515,10 @@ Arduino extension, update the `port` field to match your COM port.
 
 ### 5. Upload
 
-1. Hold the **BOOT** button on the T7 S3 while briefly pressing **RST** to enter
-   download mode (the LED dims).
-2. Select the correct COM port in the IDE.
-3. Click **Upload**.
-4. After upload completes, press **RST** to boot into the new firmware.
+1. Connect the FireBeetle 2 via USB-C.
+2. The board uses an auto-reset circuit — simply click **Upload** in the IDE.
+3. If upload fails, hold the **BOOT** button while pressing **RST** to force download
+   mode, then retry.
 
 ---
 
@@ -515,7 +526,7 @@ Arduino extension, update the `port` field to match your COM port.
 
 | State | Avg. current | Duration (per day) |
 |---|---|---|
-| Deep sleep | ~20 µA | ~86,310 s (23 h 58 m) |
+| Deep sleep (ESP32 RTC) | ~20 µA | ~86,310 s (23 h 58 m) |
 | Boot + WiFi + NTP | ~150 mA peak | ~15–20 s |
 | Display rendering + refresh | ~60–80 mA | ~40–60 s |
 | MOSFET leakage during sleep | < 1 µA | — |
@@ -529,12 +540,12 @@ Active:      90 s × 80 mA avg  = 2.00 mAh
 Total per day ≈ 2.5 mAh
 ```
 
-A 1200 mAh LiPo provides approximately **480 days** (~16 months) per charge under
+A 1000 mAh LiPo provides approximately **400 days** (~13 months) per charge under
 these conditions. Real-world life varies with WiFi connection time and temperature.
 
 To improve battery life further:
 - Move the frame closer to the router to reduce WiFi association time
-- Reduce CPU frequency below 80 MHz if SPI throughput allows
+- The firmware already reduces CPU to 80 MHz via `setCpuFrequencyMhz(80)` during the active window
 - Consider disabling NTP sync after a successful time fetch and relying on drift-corrected RTC
 
 ---
@@ -543,16 +554,17 @@ To improve battery life further:
 
 | Symptom | Likely cause | Resolution |
 |---|---|---|
-| Display never updates, stays blank | MOSFET not conducting | Verify GPIO16 goes LOW in `setup()`. Check 100 kΩ pull-up is from gate to Source (3.3 V), not to GND. |
-| SD mount fails on every boot | SPI bus or CS wiring | Confirm SD uses GPIO4–7 (HSPI). Do not connect SD to the same pins as the display. |
-| Display initializes but image is garbled | Incorrect SPI pins | Verify GPIO10/11/12/13/14/15 match HAT+ header pins exactly. |
+| Display never updates, stays blank | MOSFET not conducting | Verify GPIO21 goes LOW in `setup()`. Check 100 kΩ pull-up is from gate to Source (3.3 V), not to GND. |
+| SD mount fails on every boot | SPI bus or CS wiring | Confirm SD uses GPIO14/13/4/33. Check all wires with a multimeter. |
+| Display initializes but image is garbled | Incorrect SPI pins | Verify GPIO18/23/5/27/26/25 match HAT+ header pins exactly. |
 | Image colors look wrong (red/blue swapped) | Wrong `DISPLAY_TYPE` | Confirm `#define DISPLAY_TYPE_E` is active in `epd7in3combined.h` (not `DISPLAY_TYPE_F`). |
-| Album button does nothing | Wiring or wrong GPIO | Confirm button connects GPIO1 to GND. Open serial monitor — `[BTN]` lines should appear when button is held. |
+| Album button does nothing | Wiring or wrong GPIO | Confirm button connects GPIO22 to GND. Open serial monitor — `[BTN]` lines should appear when button is held. |
 | Album switch cancels before completing | Timing too tight | Increase `ALBUM_CONFIRM_WINDOW_MS` in the sketch. |
 | No WiFi connection | Credentials or range | Check `setup.json` is in the SD **root** (not inside albumA/B). Verify SSID/password. |
 | Frame wakes but shows nothing | Empty album directory | Confirm `/albumA/` or `/albumB/` contains `.bmp` files and a valid `info.txt`. |
-| Battery reading seems off | ADC calibration | `analogReadMilliVolts()` uses eFuse calibration on S3. If values drift, check that the T7 S3 voltage divider resistors are equal (both ~1 MΩ). |
-| Upload fails in Arduino IDE | Board not in download mode | Hold BOOT, press RST, release BOOT, then upload. |
+| Battery reading is always 0 V | Wrong ADC pin | See battery note above — try GPIO34 or GPIO35 for `BAT_ADC_PIN` depending on board revision. |
+| Upload fails in Arduino IDE | Port or driver issue | Ensure CP2102 driver is installed. Try a different USB-C cable. |
+| GPIO6–11 compile warning | Misconfiguration | Never use GPIO6–11; they are reserved for the internal SPI flash on ESP32. |
 
 ---
 

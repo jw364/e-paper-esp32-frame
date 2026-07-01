@@ -1,16 +1,16 @@
 /**
- * epdif.h — EPD SPI interface for LILYGO T7 S3 V1.1 (ESP32-S3)
+ * epdif.h — EPD SPI interface for DFRobot FireBeetle 2 ESP32-E
  * Display: Waveshare 7.3" Spectra 6 (E6) via HAT+ Driver Board
  *
- * SPI bus: FSPI (SPI2 peripheral, bus index 0 on ESP32-S3)
+ * SPI bus: VSPI (SPI2 peripheral) — avoids GPIO 6–11 (internal flash bus)
  *
- * Wiring (T7 S3 → HAT+ header):
- *   GPIO12 → CLK   (SCLK)
- *   GPIO11 → DIN   (MOSI)
- *   GPIO10 → CS
- *   GPIO13 → DC
- *   GPIO14 → RST
- *   GPIO15 → BUSY
+ * Wiring (FireBeetle 2 → HAT+ header):
+ *   GPIO18 → CLK   (SCLK)
+ *   GPIO23 → DIN   (MOSI)
+ *   GPIO5  → CS
+ *   GPIO27 → DC
+ *   GPIO26 → RST
+ *   GPIO25 → BUSY
  */
 
 #ifndef EPDIF_H
@@ -18,13 +18,13 @@
 
 #include <arduino.h>
 
-// ── Display SPI (FSPI / SPI2) ─────────────────────────────────────────────────
-#define EPD_SCLK    12    // SPI2 default SCK  on ESP32-S3
-#define EPD_MOSI    11    // SPI2 default MOSI on ESP32-S3
-#define CS_PIN      10    // SPI2 default CS0  on ESP32-S3
-#define DC_PIN      13
-#define RST_PIN     14
-#define BUSY_PIN    15
+// ── Display SPI (VSPI / SPI2) ─────────────────────────────────────────────────
+#define EPD_SCLK    18    // VSPI SCK  (GPIO 6–11 are reserved for flash on ESP32)
+#define EPD_MOSI    23    // VSPI MOSI
+#define CS_PIN       5    // VSPI CS0  (strapping pin — HIGH at power-on is fine)
+#define DC_PIN      27
+#define RST_PIN     26
+#define BUSY_PIN    25
 
 class EpdIf {
 public:

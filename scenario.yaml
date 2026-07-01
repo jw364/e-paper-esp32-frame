@@ -4,7 +4,7 @@
 # albums.  Runs headlessly via the Wokwi CI GitHub Action.
 #
 # Sequence simulated here:
-#   1. GPIO1 driven LOW at t=0 (button held before setup() checks it)
+#   1. GPIO22 driven LOW at t=0 (button held before setup() checks it)
 #   2. Held for 2.2 s  (> 2000 ms threshold)
 #   3. Released
 #   4. Waits for "Verification window started" in serial
@@ -12,7 +12,7 @@
 #   6. Second confirmation press (still within window)
 #   7. Asserts "ALBUM SWITCHED" in serial output
 #
-# GPIO1 is active-LOW (INPUT_PULLUP on the ESP32-S3).
+# GPIO22 is active-LOW (INPUT_PULLUP on the FireBeetle 2 ESP32-E).
 # 0 = button pressed, 1 = button released.
 
 version: 1
@@ -22,13 +22,13 @@ name: Album switch full sequence
 steps:
   # Press button immediately — must be held before checkAndHandleAlbumButton()
   # runs at ~75 ms into setup().
-  - { set-pin: { pin: 1, value: 0 } }
+  - { set-pin: { pin: 22, value: 0 } }
 
   # Hold for 2.2 s  (ALBUM_HOLD_DURATION_MS = 2000 ms; effective hold ≈ 2125 ms)
   - { delay: 2200 }
 
   # Release button; waitForButtonState(false, 5000) will debounce and confirm release.
-  - { set-pin: { pin: 1, value: 1 } }
+  - { set-pin: { pin: 22, value: 1 } }
 
   # Wait for firmware to confirm release, debounce, and log the window message.
   - wait-serial:
@@ -37,15 +37,15 @@ steps:
 
   # ── Confirmation press 1 (≈ 500 ms into the 5-second window) ─────────────
   - { delay: 500 }
-  - { set-pin: { pin: 1, value: 0 } }   # press
+  - { set-pin: { pin: 22, value: 0 } }   # press
   - { delay: 300 }
-  - { set-pin: { pin: 1, value: 1 } }   # release
+  - { set-pin: { pin: 22, value: 1 } }   # release
 
   # ── Confirmation press 2 (≈ 1400 ms into the 5-second window) ────────────
   - { delay: 600 }
-  - { set-pin: { pin: 1, value: 0 } }   # press
+  - { set-pin: { pin: 22, value: 0 } }   # press
   - { delay: 300 }
-  - { set-pin: { pin: 1, value: 1 } }   # release
+  - { set-pin: { pin: 22, value: 1 } }   # release
 
   # Assert album switch was logged — must appear within 2 s of last press.
   - wait-serial:
