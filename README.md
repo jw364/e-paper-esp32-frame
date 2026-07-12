@@ -1,6 +1,6 @@
 # E-Paper ESP32 Picture Frame
 
-A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 6 full-color e-paper display. The frame wakes once a day, fetches the correct time over WiFi, renders the next photo from an SD card using Floyd–Steinberg dithering, updates the display, and returns to deep sleep — all in under 90 seconds. The e-ink panel holds the image indefinitely with zero power draw until the next update.
+A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 6 full-color e-paper display. The frame wakes once per hour (configurable via `REFRESH_INTERVAL_HOURS`), renders the next photo from an SD card using Floyd–Steinberg dithering, updates the display, and returns to deep sleep — all in under 90 seconds. WiFi/NTP is only contacted on first boot and roughly once a day thereafter to correct clock drift; every other hourly wake runs entirely off the RTC-backed clock, with no WiFi connection. The e-ink panel holds the image indefinitely with zero power draw until the next update.
 
 ![Frame front](images/e-paper-esp32-frame.jpg?raw=true)
 ![Frame back](images/e-paper-esp32-frame-backside.jpg?raw=true)
@@ -15,6 +15,7 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 - [Wiring](#wiring)
   - [Full System Diagram](#full-system-diagram)
   - [MOSFET Power Switch Circuit](#mosfet-power-switch-circuit)
+    - [Sourcing and Soldering](#sourcing-and-soldering)
   - [Display HAT+ Connection](#display-hat-connection)
   - [SD Card Connection](#sd-card-connection)
   - [Album Button](#album-button)
@@ -25,6 +26,7 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 - [Wokwi Simulation](#wokwi-simulation)
 - [Image Conversion](#image-conversion)
 - [Build & Flash](#build--flash)
+  - [Cut the "Low Power" Solder Pad (Recommended)](#cut-the-low-power-solder-pad-recommended)
 - [Power Budget](#power-budget)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -35,12 +37,13 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 
 - **6-color e-ink display** — Waveshare 7.3" Spectra 6 (Black, White, Red, Yellow, Blue, Green) at 800×480
 - **Floyd–Steinberg dithering** — converts full-color photos to the 6-color palette with smooth gradients and no banding
-- **Date-aware scheduling** — assign specific images to specific calendar dates; fall back to sequential rotation on undated days
+- **Hourly rotation, configurable interval** — wakes and refreshes every `REFRESH_INTERVAL_HOURS` hours (1 by default); date-aware scheduling assigns specific images to specific calendar dates and holds them for the whole day, falling back to sequential rotation on undated days
 - **Two switchable albums** — hold ≥2 s then press twice within a 5-second window to switch between Album A and Album B; album selection persists across power cycles
-- **Ultra-low power** — ~20 µA deep sleep; estimated 12–18 months on a 1000 mAh LiPo with one refresh per day
+- **Ultra-low power** — ~13 µA deep sleep (after cutting the FireBeetle "Low Power" pad); estimated ~2 months on a 1200 mAh LiPo at the default hourly cadence (~1 year+ if switched to a daily cadence)
 - **MOSFET power gating** — AO3401 P-channel MOSFET cuts power to the display HAT+ and SD card during sleep
 - **Battery monitor** — low-battery indicator in the image corner; indefinite sleep on critical voltage
-- **WiFi time sync** — NTP-synchronized scheduling; graceful fallback if WiFi is unavailable
+- **WiFi time sync, mostly skipped** — NTP sync only on first boot and roughly once a day thereafter (`NTP_SYNC_EVERY_N_WAKES`); other wakes never touch WiFi
+- **Optional quiet hours** — skip refreshes overnight (or any configured window) and sleep straight through
 - **Included BMP converter** — Windows GUI tool to crop, rotate, and export photos to the correct format
 
 ---
@@ -52,11 +55,12 @@ A battery-powered digital picture frame built around the Waveshare 7.3" Spectra 
 | [DFRobot FireBeetle 2 ESP32-E](https://www.dfrobot.com/product-2195.html) | ESP32, 4 MB Flash, onboard LiPo charger |
 | [Waveshare 7.3" E-Paper HAT (E)](https://www.waveshare.com/product/displays/e-paper/epaper-1/7.3inch-e-paper-hat-e.htm) | Spectra 6 E6 panel, 800×480, 6-color, SPI, includes HAT+ driver board |
 | MicroSD card module | 3.3 V SPI type |
-| AO3401 P-channel MOSFET | SOT-23 or through-hole breakout |
+| AO3401 P-channel MOSFET | SOT-23 (e.g., [Chanzon 100-pack](https://www.amazon.com/dp/B08LVLLC1V)); mount on a SOT-23-to-DIP breakout board for durable wiring — see [Sourcing and soldering](#sourcing-and-soldering) below |
 | 10 kΩ resistor | MOSFET gate series resistor |
 | 100 kΩ resistor | MOSFET gate pull-up |
 | Momentary push button | Album switch |
-| 3.7 V 1000 mAh LiPo battery | With JST-PH 2-pin connector to match FireBeetle 2 |
+| 3.7 V 1200 mAh 603450 LiPo battery with PCM protection | With JST-PH 2-pin connector to match FireBeetle 2 |
+| Panel-mount toggle switch (5 mm thread) | **Recommended.** Wires in series with the battery positive lead, between battery and board, for a physical hard-off |
 
 > **Important — GPIO restrictions on ESP32:**
 > GPIO 6–11 are internally connected to the SPI flash chip and **cannot be used** for any other purpose. The pin assignments in this project deliberately avoid all of those pins.
@@ -75,8 +79,15 @@ Release GPIO hold → drive MOSFET LOW (GPIO21) → power on peripherals
 Check album button (up to ~8 s if held; instant skip otherwise)
        │
        ▼
-Mount SD card → connect WiFi → sync NTP time
-       │
+Mount SD card → sync time (see below) ────────────────────────┐
+       │                                                       │
+       │  Most wakes: no WiFi — read RTC-backed clock directly │
+       │  First boot / after power loss, or every               │
+       │  NTP_SYNC_EVERY_N_WAKES wakes: connect WiFi → sync NTP  │
+       │◄──────────────────────────────────────────────────────┘
+       ▼
+Quiet hours? (optional) ── yes ──► skip refresh, go straight to sleep step
+       │ no
        ▼
 Scan album directory → find next image by date or index
        │
@@ -88,10 +99,11 @@ TurnOnDisplay (triggers e-ink refresh, ~30–40 s) → Sleep display
        │
        ▼
 Drive MOSFET HIGH (GPIO21) → power off peripherals
-gpio_hold_en → deep sleep until next scheduled time (target: 10:00 AM daily)
+gpio_hold_en → deep sleep until next REFRESH_INTERVAL_HOURS boundary
+               (or until quiet hours end, if the refresh was skipped)
 ```
 
-The display retains the image without any power after the firmware calls `Sleep()`. The MOSFET cuts the 3.3 V rail to both the HAT+ and the SD card module during deep sleep, ensuring the only quiescent draw is the ESP32 RTC (~20 µA).
+The display retains the image without any power after the firmware calls `Sleep()`. The MOSFET cuts the 3.3 V rail to both the HAT+ and the SD card module during deep sleep, leaving only the ESP32 RTC domain drawing quiescent current — about ~13 µA once the ["Low Power" solder pad](#cut-the-low-power-solder-pad-recommended) has been cut (see [Power Budget](#power-budget)).
 
 ---
 
@@ -162,6 +174,40 @@ and suppresses ringing on fast edges.
 
 ---
 
+### Sourcing and Soldering
+
+**Pinout:** With the AO3401's marked side facing you and the two-leg side down,
+pin 1 (bottom-left) is **Gate**, pin 2 (bottom-right) is **Source**, and pin 3
+(top, the single leg) is **Drain**. Always verify this against your specific
+part's datasheet before soldering — pinouts can vary between manufacturers of
+"AO3401"-branded parts.
+
+**Physical assembly tip:** The 100 kΩ Gate–Source pull-up spans the two *adjacent
+bottom legs* (pins 1 and 2), so it can be soldered directly across them — or across
+the corresponding pair of holes if the MOSFET is mounted on a SOT-23-to-DIP breakout
+board. The 10 kΩ series resistor goes inline in the GPIO21 wire, not across the
+MOSFET's legs.
+
+**Bench test before installation:** Wire 3.3 V → Source, and an LED with a 330 Ω
+series resistor from Drain → GND. With Gate tied to GND, the LED should turn on;
+with Gate tied to 3.3 V, the LED should turn off. Confirm this before wiring the
+MOSFET into the frame.
+
+> **Substitution warning:** TO-92-packaged P-channel FETs that look similar at a
+> glance — VP0109, BS250, ZVP2110, and similar — are **not** suitable substitutes
+> for the AO3401, despite resembling it in casual searches. For example, the
+> VP0109 has a Vgs(th) of up to −3.5 V, meaning it may be marginal or
+> non-conducting at the −3.3 V gate drive this circuit provides, and its
+> Rds(on) is specified as 6 Ω — at ~200 mA load that's a >1 V drop, enough to
+> brown out the display and SD card. The AO3401 is a logic-level MOSFET (fully
+> enhanced well below −3.3 V Vgs) with Rds(on) of only 0.085 Ω. Use the AO3401
+> or an equivalent **logic-level** P-channel MOSFET only.
+
+> **ESD note:** The AO3401's gate has no internal ESD protection. Touch a
+> grounded surface before handling it to avoid static damage.
+
+---
+
 ### Display HAT+ Connection
 
 Connect jumper wires from the FireBeetle 2 to the Waveshare HAT+ 40-pin header. The
@@ -218,9 +264,19 @@ The button reads LOW when pressed.
 
 ### Battery
 
-Connect a 3.7 V LiPo with a JST-PH 2-pin connector to the battery port on the
+Connect a 3.7 V 1200 mAh 603450 LiPo battery **with a built-in PCM (protection
+circuit module)** with a JST-PH 2-pin connector to the battery port on the
 FireBeetle 2. The board includes an onboard charging circuit; recharge via USB-C.
-Do not reverse the connector polarity.
+
+> **Polarity warning:** LiPo JST connector polarity is **not standardized** across
+> manufacturers — a pack from a different supplier than the FireBeetle's own may
+> have reversed pinout on an otherwise-identical-looking connector. Before plugging
+> in a new battery, verify polarity with a multimeter against the polarity markings
+> on the FireBeetle 2's battery connector. Do not rely on connector shape alone.
+
+If the recommended panel-mount toggle switch (see [Hardware](#hardware)) is
+installed, it wires in series with the battery's positive lead, between the
+battery and the board, giving a physical hard-off independent of the MOSFET.
 
 GPIO36 reads battery voltage through the FireBeetle 2's onboard resistor divider (×½).
 The firmware multiplies the ADC reading by 2 to recover actual battery voltage.
@@ -294,8 +350,9 @@ SD root/
 ### Image filenames
 
 Include a date string in `DD.MM` format anywhere in the filename to pin that image
-to a specific calendar day. The firmware scans for the current date each morning and
-shows the matching image if one exists.
+to a specific calendar day. The firmware checks for a matching date on every hourly
+wake and, once matched, holds that image for the rest of the calendar day — it does
+not rotate away from a pinned image until the date changes.
 
 ```
 042_25.12_christmas_morning.bmp   → displayed on 25 December every year
@@ -376,6 +433,17 @@ All timing values are `#define` constants near the top of `e-paper-esp32-frame.i
 #define ALBUM_HOLD_DURATION_MS  2000    // Minimum hold to begin the sequence (ms)
 #define ALBUM_CONFIRM_WINDOW_MS 5000    // Shared window for BOTH confirmation presses (ms)
 #define BUTTON_POLL_MS            10    // Polling interval during button checks (ms)
+```
+
+Refresh scheduling and quiet-hours constants live in `time_utils.h`:
+
+```cpp
+#define REFRESH_INTERVAL_HOURS     1    // Wake and refresh the display every N hours
+#define NTP_SYNC_EVERY_N_WAKES    24    // Reconnect WiFi/NTP roughly once/day at hourly cadence
+
+#define QUIET_HOURS_ENABLED             // Comment out to disable quiet hours entirely
+#define QUIET_HOURS_START          0    // Inclusive hour, 0-23
+#define QUIET_HOURS_END             7   // Exclusive hour, 0-23
 ```
 
 ### Persistence
@@ -520,33 +588,71 @@ Arduino extension, update the `port` field to match your COM port.
 3. If upload fails, hold the **BOOT** button while pressing **RST** to force download
    mode, then retry.
 
+### Cut the "Low Power" Solder Pad (Recommended)
+
+The FireBeetle 2 ESP32-E's onboard WS2812 RGB LED has a controller chip that draws
+~500 µA continuously — even during deep sleep — because it stays powered directly
+off the battery rail rather than being switched by the MOSFET. On a battery-powered
+frame that spends nearly all its time asleep, this is a large fraction of total
+quiescent draw.
+
+The board ships with a solder pad connecting this LED's power rail: two pads joined
+by a thin trace, labeled **"Low-Power"** on the front silkscreen (**R11 / 0 Ω** on
+the schematic). It ships bridged (connected).
+
+To cut it:
+
+1. Score through the thin trace between the two pads with a hobby knife, using
+   several light passes rather than one deep cut.
+2. Verify the cut with a multimeter continuity test across the two pads — they
+   should read open (no continuity) when done.
+
+After cutting, deep sleep current drops from ~500 µA to **~13 µA**. The tradeoff:
+the onboard RGB LED then only lights up while the board is powered from USB — it
+no longer works on battery power. This is reversible: bridge the two pads with a
+blob of solder to restore the LED.
+
 ---
 
 ## Power Budget
 
-| State | Avg. current | Duration (per day) |
+These figures assume the ["Low Power" solder pad](#cut-the-low-power-solder-pad-recommended)
+has been cut (~13 µA deep sleep). If it hasn't been cut, add ~500 µA of continuous
+draw from the onboard WS2812 controller — at hourly cadence that's roughly an
+extra 12 mAh/day, enough to cut the estimate below by more than half.
+
+| State | Avg. current | Duration (per refresh cycle) |
 |---|---|---|
-| Deep sleep (ESP32 RTC) | ~20 µA | ~86,310 s (23 h 58 m) |
-| Boot + WiFi + NTP | ~150 mA peak | ~15–20 s |
-| Display rendering + refresh | ~60–80 mA | ~40–60 s |
-| MOSFET leakage during sleep | < 1 µA | — |
+| Deep sleep (pad cut) | ~13 µA | ~59 min (at `REFRESH_INTERVAL_HOURS = 1`) |
+| Display render + refresh | ~60–80 mA | ~30–40 s |
+| WiFi + NTP (only on sync wakes) | ~150 mA peak | ~15–20 s, once per `NTP_SYNC_EVERY_N_WAKES` wakes |
 
-**Estimated daily consumption:**
+**Estimated daily consumption at the default hourly cadence:**
 
 ```
-Sleep:    86,310 s × 0.020 mA  = 0.48 mAh
-Active:      90 s × 80 mA avg  = 2.00 mAh
-                                 ─────────
-Total per day ≈ 2.5 mAh
+24 refreshes/day × ~0.7 mAh each   ≈ 17    mAh/day   (30–40 s @ 60–80 mA per refresh)
+Deep sleep, ~13 µA × 24 h          ≈  0.3  mAh/day
+                                     ───────────────
+Total per day                     ≈ 17–18  mAh/day
 ```
 
-A 1000 mAh LiPo provides approximately **400 days** (~13 months) per charge under
-these conditions. Real-world life varies with WiFi connection time and temperature.
+A 1200 mAh LiPo provides approximately **2 months** per charge at this cadence.
+Real-world life varies with panel refresh time, temperature, and how often the
+periodic NTP re-sync needs retries.
 
-To improve battery life further:
-- Move the frame closer to the router to reduce WiFi association time
-- The firmware already reduces CPU to 80 MHz via `setCpuFrequencyMhz(80)` during the active window
-- Consider disabling NTP sync after a successful time fetch and relying on drift-corrected RTC
+**Cadence comparison** — set via `REFRESH_INTERVAL_HOURS`:
+
+| Cadence | Refreshes/day | Est. runtime on 1200 mAh |
+|---|---|---|
+| Hourly (`REFRESH_INTERVAL_HOURS = 1`) | 24 | ~2 months |
+| Daily (`REFRESH_INTERVAL_HOURS = 24`) | 1 | ~1 year+ |
+
+**Implemented mitigations:**
+- WiFi/NTP is skipped on almost every wake — only first boot/after power loss and
+  every `NTP_SYNC_EVERY_N_WAKES` wakes connect (see [Timing Constants](#timing-constants))
+- Optional quiet hours (`QUIET_HOURS_ENABLED`) skip refreshes overnight or during
+  any configured window instead of waking hourly for nothing
+- CPU is clocked down to 80 MHz via `setCpuFrequencyMhz(80)` during the active window
 
 ---
 
