@@ -6,8 +6,9 @@
  *   Display  : Waveshare 7.3" Spectra 6 (E6) Full-Color E-Paper (800×480)
  *   Driver   : Waveshare HAT+ Driver Board
  *   Storage  : MicroSD card module (SPI)
- *   Power SW : AO3401 P-channel MOSFET (high-side, 3.3 V rail)
- *   Battery  : 3.7 V 1000 mAh LiPo
+ *   Power SW : AO3401 P-channel MOSFET, SOT-23 (high-side, 3.3 V rail; mounted
+ *              on a SOT-23-to-DIP breakout board)
+ *   Battery  : 3.7 V 1200 mAh 603450 LiPo with PCM protection
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * PIN MAP
@@ -93,7 +94,8 @@ Epd         epd;
 SPIClass    sd_spi(HSPI);   // HSPI peripheral on ESP32; custom pins set in begin()
 
 unsigned long delta;                  // millis() at wake; used for sleep calculation
-unsigned long deltaSinceTimeObtain;   // millis() after NTP sync
+unsigned long deltaSinceTimeObtain;   // millis() after time sync/read
+bool skippedForQuietHours = false;    // set when this wake skipped the refresh (quiet hours)
 
 // Convenience wrappers used by drawBmp()
 uint16_t width()  { return EPD_WIDTH;  }
@@ -314,9 +316,10 @@ void hibernate() {
   // activates this for all held pins across the sleep cycle.
   gpio_hold_en((gpio_num_t)MOSFET_PIN);
   gpio_deep_sleep_hold_en();
-  esp_deep_sleep(
-    static_cast<uint64_t>(getSecondsTillNextImage(delta, deltaSinceTimeObtain)) * 1000000ULL
-  );
+  uint64_t sleepMicros = skippedForQuietHours
+      ? getMicrosecondsTillQuietHoursEnd(delta, deltaSinceTimeObtain)
+      : getMicrosecondsTillNextWake(delta, deltaSinceTimeObtain);
+  esp_deep_sleep(sleepMicros);
 }
 
 
@@ -409,54 +412,30 @@ String getNextFile() {
   while (file.available()) fileString += (char)file.read();
   file.close();
 
-  // Determine display date
-  String date;
-  if (timeWorking) {
-    Serial.println("Hour: " + String(timeinfo.tm_hour));
-    if (timeinfo.tm_hour < 9) {
-      // Before 09:00 → show yesterday's image
-      time_t yesterday = mktime(&timeinfo) - 86400;
-      struct tm* pdi   = localtime(&yesterday);
-      char buf[6];
-      snprintf(buf, sizeof(buf), "%02d.%02d", pdi->tm_mday, pdi->tm_mon + 1);
-      date = String(buf);
-    } else {
-      char buf[6];
-      snprintf(buf, sizeof(buf), "%02d.%02d", timeinfo.tm_mday, timeinfo.tm_mon + 1);
-      date = String(buf);
-    }
-  } else {
-    // No time available — advance stored date by one day
-    date = preferences.getString("date", "01.01");
-    int day   = date.substring(0, 2).toInt();
-    int month = date.substring(3, 5).toInt();
-    struct tm t = {0};
-    t.tm_year  = 100;       // year 2000 (leap year, handles Feb 29)
-    t.tm_mon   = month - 1;
-    t.tm_mday  = day + 1;
-    mktime(&t);             // normalises overflow (e.g. Jan 32 → Feb 1)
-    char buf[6];
-    snprintf(buf, sizeof(buf), "%02d.%02d", t.tm_mday, t.tm_mon + 1);
-    date = String(buf);
-    Serial.println("Fallback date: " + date);
-  }
-
-  Serial.println("Looking for date: " + date);
-  preferences.putString("date", date);
-
-  // Search for a date-labelled file first
+  // Date-pinned images require a known calendar date. Every hourly wake on a
+  // matched day re-derives the same date and re-finds the same pinned file
+  // (the sequential index below is only advanced on the "no match" path), so
+  // a pinned image holds for the whole day across all its hourly wakes.
+  // Without synced time, there's no reliable calendar date to match against,
+  // so date-pinning is skipped and the album falls back to sequential rotation.
+  String nextFile = "";
   int    start    = 0;
   int    end      = fileString.indexOf(',', start);
-  String nextFile = "";
+  if (timeWorking) {
+    char buf[6];
+    snprintf(buf, sizeof(buf), "%02d.%02d", timeinfo.tm_mday, timeinfo.tm_mon + 1);
+    String date = String(buf);
+    Serial.println("Looking for date: " + date);
 
-  while (end != -1) {
-    String candidate = fileString.substring(start, end);
-    if (candidate.indexOf(date) != -1) {
-      nextFile = candidate;
-      break;
+    while (end != -1) {
+      String candidate = fileString.substring(start, end);
+      if (candidate.indexOf(date) != -1) {
+        nextFile = candidate;
+        break;
+      }
+      start = end + 1;
+      end   = fileString.indexOf(',', start);
     }
-    start = end + 1;
-    end   = fileString.indexOf(',', start);
   }
 
   if (nextFile != "") {
@@ -735,27 +714,38 @@ void setup() {
     hibernate();
   }
 
-  // ── WiFi + NTP ────────────────────────────────────────────────────────────
-  initializeWifi();
-  initializeTime();
+  // ── Time sync ──────────────────────────────────────────────────────────────
+  // WiFi/NTP is contacted only on first boot / after power loss, or every
+  // NTP_SYNC_EVERY_N_WAKES wakes; all other hourly wakes read the RTC-backed
+  // system clock directly with no WiFi (see syncTimeIfNeeded()).
+  syncTimeIfNeeded();
   deltaSinceTimeObtain = millis();
 
-  // ── E-paper display ───────────────────────────────────────────────────────
-  if (epd.Init() != 0) {
-    Serial.println("EPD init failed — hibernating.");
-    hibernate();
-  }
-  Serial.println("EPD init OK.");
-
-  // ── Scan SD, pick next file, render ───────────────────────────────────────
-  checkSDFiles();
-  String file = getNextFile();
-  if (file.length() == 0) {
-    Serial.println("No image file found — hibernating.");
-    // Put display to sleep before giving up
-    epd.Sleep();
+  // ── Quiet hours ────────────────────────────────────────────────────────────
+  // If enabled and the current time (when known) falls inside the configured
+  // window, skip the refresh entirely and sleep straight through to the end
+  // of the window instead of waking every hour for nothing.
+  skippedForQuietHours = isWithinQuietHours();
+  if (skippedForQuietHours) {
+    Serial.println("Within quiet hours — skipping refresh.");
   } else {
-    drawBmp(file.c_str());
+    // ── E-paper display ─────────────────────────────────────────────────────
+    if (epd.Init() != 0) {
+      Serial.println("EPD init failed — hibernating.");
+      hibernate();
+    }
+    Serial.println("EPD init OK.");
+
+    // ── Scan SD, pick next file, render ─────────────────────────────────────
+    checkSDFiles();
+    String file = getNextFile();
+    if (file.length() == 0) {
+      Serial.println("No image file found — hibernating.");
+      // Put display to sleep before giving up
+      epd.Sleep();
+    } else {
+      drawBmp(file.c_str());
+    }
   }
 
   // Power off peripherals (MOSFET HIGH)

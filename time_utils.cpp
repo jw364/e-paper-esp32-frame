@@ -4,6 +4,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
+#include "esp_attr.h"
 
 const char* ntpServer = "europe.pool.ntp.org";
 const long  gmtOffset_sec = 3600; // GMT+1
@@ -11,6 +12,10 @@ const int   daylightOffset_sec = 3600; // Daylight saving time offset
 bool wifiWorking = false;
 bool timeWorking = false;
 struct tm timeinfo;
+
+// Survive deep sleep (reset to 0/false only on power loss or cold boot).
+RTC_DATA_ATTR uint32_t wakeCounter    = 0;
+RTC_DATA_ATTR bool     timeSyncedOnce = false;
 
 #define USE_MOCK_TIME 0
 
@@ -97,45 +102,107 @@ void initializeTime() {
         return;
       }
     }
-    
+
     timeWorking = true;
     Serial.println("Time successfully obtained");
     Serial.println(&timeinfo, "Current time: %A, %B %d %Y %H:%M:%S");
 }
 
-long getSecondsTillNextImage(long delta, long deltaSinceTimeObtain){
+bool syncTimeIfNeeded() {
+    wakeCounter++;
 
-    if(!timeWorking){
-      unsigned int totalRuntime = millis() - delta;
-      unsigned int totalRuntimeSeconds = totalRuntime / 1000;
-      Serial.println("No time sleep time: " + String(24 * 60 * 60 - totalRuntimeSeconds));
-      return 24 * 60 * 60 - totalRuntimeSeconds;
+    bool needsSync = !timeSyncedOnce || (wakeCounter % NTP_SYNC_EVERY_N_WAKES == 0);
+
+    if (!needsSync) {
+        // Most wakes: no WiFi. The ESP32 RTC clock keeps running through deep
+        // sleep, so the system time set by a previous NTP sync is still valid —
+        // just read it back directly.
+        Serial.println("Skipping WiFi/NTP this wake (wake #" + String(wakeCounter) + ").");
+        wifiWorking = false;
+        timeWorking =
+          #if USE_MOCK_TIME
+                  getMockLocalTime(&timeinfo);
+          #else
+                  getLocalTime(&timeinfo, 10);
+          #endif
+        return timeWorking;
+    }
+
+    Serial.println("Syncing WiFi/NTP this wake (wake #" + String(wakeCounter) + ").");
+    initializeWifi();
+    initializeTime();
+    if (timeWorking) timeSyncedOnce = true;
+    return timeWorking;
+}
+
+bool isWithinQuietHours() {
+#ifdef QUIET_HOURS_ENABLED
+    if (!timeWorking) return false;  // Unknown time — ignore quiet hours, refresh normally
+    int h = timeinfo.tm_hour;
+    if (QUIET_HOURS_START == QUIET_HOURS_END) return false;  // degenerate window = disabled
+    if (QUIET_HOURS_START < QUIET_HOURS_END) {
+        return h >= QUIET_HOURS_START && h < QUIET_HOURS_END;
+    } else {
+        // Window wraps midnight, e.g. 22 → 6
+        return h >= QUIET_HOURS_START || h < QUIET_HOURS_END;
+    }
+#else
+    return false;
+#endif
+}
+
+uint64_t getMicrosecondsTillNextWake(unsigned long delta, unsigned long deltaSinceTimeObtain) {
+    const long intervalSeconds = (long)REFRESH_INTERVAL_HOURS * 3600L;
+
+    if (!timeWorking) {
+      // No wall-clock time available — fall back to a fixed-length sleep,
+      // compensated for however long this wake has already been running.
+      unsigned long totalRuntimeMs = millis() - delta;
+      long totalRuntimeSeconds = (long)(totalRuntimeMs / 1000);
+      long sleepSeconds = intervalSeconds - totalRuntimeSeconds;
+      if (sleepSeconds < 1) sleepSeconds = 1;
+      Serial.println("No time — fallback sleep: " + String(sleepSeconds) + " s");
+      return (uint64_t)sleepSeconds * 1000000ULL;
     }
 
     Serial.println(&timeinfo, "Current time: %A, %B %d %Y %H:%M:%S");
 
-    // Calculate the total seconds from midnight to the current time
-    unsigned int totalRuntime = millis() - deltaSinceTimeObtain;
-    int currentSeconds = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
-    Serial.println("Current seconds: " + String(currentSeconds));
-    currentSeconds += (totalRuntime / 1000);
-    Serial.println("Current seconds: " + String(currentSeconds));
-    // Calculate the total seconds from midnight to 10:00 AM
-    int targetSeconds = 10 * 3600;
+    // Seconds since midnight, projected forward by however long this wake has run.
+    long currentSeconds = (long)timeinfo.tm_hour * 3600L
+                         + (long)timeinfo.tm_min * 60L
+                         + (long)timeinfo.tm_sec;
+    long elapsedSeconds = (long)((millis() - deltaSinceTimeObtain) / 1000);
+    currentSeconds += elapsedSeconds;
 
-    // Calculate the time difference
-    int timeDiff;
-    // If current time is before or exactly 09:00 AM, calculate the difference to 10:00 AM
-    if (currentSeconds <= targetSeconds - 60*60) {
-      // If current time is before or exactly 10:00 AM
-      timeDiff = targetSeconds - currentSeconds;
-    } else {
-      // If current time is after 10:00 AM, calculate the difference to 10:00 AM the next day
-      int secondsInADay = 24 * 3600;
-      timeDiff = secondsInADay - currentSeconds + targetSeconds;
+    // Align to the next REFRESH_INTERVAL_HOURS boundary (e.g. the top of the next hour).
+    long secondsSinceBoundary = currentSeconds % intervalSeconds;
+    long sleepSeconds = intervalSeconds - secondsSinceBoundary;
+    if (sleepSeconds <= 0) sleepSeconds = intervalSeconds;
+
+    Serial.println("Sleeping " + String(sleepSeconds) + " s till next "
+                   + String(REFRESH_INTERVAL_HOURS) + "-hour boundary");
+    return (uint64_t)sleepSeconds * 1000000ULL;
+}
+
+uint64_t getMicrosecondsTillQuietHoursEnd(unsigned long delta, unsigned long deltaSinceTimeObtain) {
+    if (!timeWorking) {
+      // Shouldn't happen — isWithinQuietHours() requires known time — but fall
+      // back safely rather than sleeping on a bogus calculation.
+      return getMicrosecondsTillNextWake(delta, deltaSinceTimeObtain);
     }
 
-    Serial.println("Time difference: " + String(timeDiff) + " seconds");
-    Serial.println("Time difference in microseconds: " + String(timeDiff * 1e6));
-    return timeDiff;
+    const long secondsInDay = 24L * 3600L;
+    long currentSeconds = (long)timeinfo.tm_hour * 3600L
+                         + (long)timeinfo.tm_min * 60L
+                         + (long)timeinfo.tm_sec;
+    long elapsedSeconds = (long)((millis() - deltaSinceTimeObtain) / 1000);
+    currentSeconds = (currentSeconds + elapsedSeconds) % secondsInDay;
+
+    long endSeconds = (long)QUIET_HOURS_END * 3600L;
+    long sleepSeconds = endSeconds - currentSeconds;
+    if (sleepSeconds <= 0) sleepSeconds += secondsInDay;  // window wraps past midnight
+
+    Serial.println("Within quiet hours — sleeping " + String(sleepSeconds)
+                   + " s until window end.");
+    return (uint64_t)sleepSeconds * 1000000ULL;
 }
