@@ -5,10 +5,16 @@
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include "esp_attr.h"
+#include <vector>
 
-const char* ntpServer = "europe.pool.ntp.org";
-const long  gmtOffset_sec = 3600; // GMT+1
-const int   daylightOffset_sec = 3600; // Daylight saving time offset
+const char* ntpServer = "us.pool.ntp.org";
+// POSIX TZ string — handles daylight saving automatically, year-round.
+// US Eastern: "EST5EDT,M3.2.0,M11.1.0"   US Central:  "CST6CDT,M3.2.0,M11.1.0"
+// US Mountain:"MST7MDT,M3.2.0,M11.1.0"   US Pacific:  "PST8PDT,M3.2.0,M11.1.0"
+const char* tzString = "EST5EDT,M3.2.0,M11.1.0";
+// Kept for reference; no longer used (configTzTime replaces configTime):
+const long  gmtOffset_sec = 0;
+const int   daylightOffset_sec = 0;
 bool wifiWorking = false;
 bool timeWorking = false;
 struct tm timeinfo;
@@ -32,6 +38,10 @@ RTC_DATA_ATTR bool     timeSyncedOnce = false;
 // void initializeTime();
 
 // Function definitions
+// setup.json accepts two shapes:
+//   Multi-network: {"networks": [{"ssid":"A","password":"a"}, {"ssid":"B","password":"b"}]}
+//   Legacy single:  {"ssid":"A","password":"a"}
+// Each candidate is tried in order (10 attempts / ~5s each) until one connects.
 void initializeWifi() {
 
     // Open setup.json file
@@ -50,40 +60,62 @@ void initializeWifi() {
     file.close();
 
     // Parse JSON
-    DynamicJsonDocument doc(1024);
-    DeserializationError error = deserializeJson(doc, buf.get());
+    DynamicJsonDocument doc(2048);
+    DeserializationError error = deserializeJson(doc, buf.get(), size);
     if (error) {
         Serial.println("Failed to parse setup.json");
         return;
     }
 
-    const char* ssid = doc["ssid"];
-    const char* password = doc["password"];
-    Serial.println("Connecting to WiFi: " + String(ssid));
-    Serial.println("Password: " + String(password));
+    struct Candidate { const char* ssid; const char* password; };
+    std::vector<Candidate> candidates;
 
-    // Connect to WiFi
-    WiFi.begin(ssid, password);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      attempts++;
-      Serial.print(".");
-      if(attempts == 10){
-        Serial.println("Failed to connect to WiFi");
-        return;
-      }
+    JsonArray networks = doc["networks"].as<JsonArray>();
+    if (!networks.isNull()) {
+        for (JsonObject net : networks) {
+            const char* ssid = net["ssid"];
+            const char* password = net["password"] | "";
+            if (ssid) candidates.push_back({ssid, password});
+        }
+    } else {
+        const char* ssid = doc["ssid"];
+        const char* password = doc["password"] | "";
+        if (ssid) candidates.push_back({ssid, password});
     }
-    wifiWorking = true;
-    Serial.println("Connected to WiFi");
+
+    if (candidates.empty()) {
+        Serial.println("No WiFi networks found in setup.json");
+        return;
+    }
+
+    for (auto& net : candidates) {
+        Serial.println("Connecting to WiFi: " + String(net.ssid));
+        WiFi.disconnect();
+        WiFi.begin(net.ssid, net.password);
+
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+            delay(500);
+            attempts++;
+            Serial.print(".");
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+            wifiWorking = true;
+            Serial.println("Connected to WiFi: " + String(net.ssid));
+            return;
+        }
+        Serial.println("Failed to connect to " + String(net.ssid));
+    }
+
+    Serial.println("Failed to connect to any known WiFi network");
 }
 void initializeTime() {
     if(!wifiWorking){
       Serial.println("Failed to obtain time, no wifi connection");
       return;
     }
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    configTzTime(tzString, ntpServer);
 
     // Retry in case of failure in getting time
     int attempts = 0; // Reset attempts for time-sync

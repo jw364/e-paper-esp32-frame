@@ -1,4 +1,6 @@
 {
-    "ssid": "YourSSID",
-    "password": "YourPassword"
+    "networks": [
+        { "ssid": "YourSSID1", "password": "YourPassword1" },
+        { "ssid": "YourSSID2", "password": "YourPassword2" }
+    ]
 }

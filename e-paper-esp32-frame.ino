@@ -2,7 +2,7 @@
  * e-paper-esp32-frame.ino
  *
  * Target hardware:
- *   MCU      : DFRobot FireBeetle 2 ESP32-E (ESP32, 4 MB Flash, no PSRAM)
+ *   MCU      : DFRobot FireBeetle 2 ESP32-E N16R2 (DFR1139 — 16 MB Flash, 2 MB PSRAM)
  *   Display  : Waveshare 7.3" Spectra 6 (E6) Full-Color E-Paper (800×480)
  *   Driver   : Waveshare HAT+ Driver Board
  *   Storage  : MicroSD card module (SPI)
@@ -11,28 +11,37 @@
  *   Battery  : 3.7 V 1200 mAh 603450 LiPo with PCM protection
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * PIN MAP
+ * PIN MAP — FireBeetle 2 ESP32-E N16R2 (DFR1139)
+ * Header exposes GPIOs 0,1,2,3,4,12,13,14,15,17,18,19,21,22,23,25,26 (digital)
+ * and 34,35,36,39 (input-only). GPIO 5/16/27/32/33 are NOT broken out (16 = NC
+ * on N16R2 — used by in-package PSRAM).
  * ─────────────────────────────────────────────────────────────────────────────
- *  GPIO  Purpose
- *  ────  ──────────────────────────────────────────────────────────────────────
- *    5   EPD CS          (VSPI / SPI2)  ← strapping pin; HIGH at boot is safe
- *   18   EPD SCLK        (VSPI / SPI2)
- *   23   EPD MOSI/DIN    (VSPI / SPI2)
- *   27   EPD DC
- *   26   EPD RST
- *   25   EPD BUSY
- *   33   SD CS           (HSPI / SPI1, custom pins)
- *   13   SD MOSI         (HSPI / SPI1)
- *   14   SD SCLK         (HSPI / SPI1)
- *    4   SD MISO         (HSPI / SPI1)  ← avoids GPIO12 strapping pin
- *   21   MOSFET gate     (LOW = peripherals ON; HIGH = peripherals OFF)
- *   36   Battery ADC     (onboard /2 voltage divider → analogReadMilliVolts × 2)
- *   22   Album button    (active LOW; internal pull-up enabled)
- *  6–11  RESERVED        (internal SPI flash — never use)
- *    0   BOOT button     (do not use; strapping pin)
- *    1   UART0 TX        (do not use; used by Serial)
- *    3   UART0 RX        (do not use; used by Serial)
- *   12   Flash strapping (do not drive HIGH during/after boot)
+ *  GPIO  Silk  Purpose
+ *  ────  ────  ────────────────────────────────────────────────────────────────
+ *   18   SCK   EPD SCLK        (VSPI / SPI2)
+ *   23   MOSI  EPD MOSI/DIN    (VSPI / SPI2)
+ *   25   D2    EPD CS
+ *   19   MISO  EPD DC          (plain GPIO — display is write-only)
+ *   15   A4    EPD RST
+ *   21   SDA   EPD BUSY
+ *   14   D6    SD SCLK         (HSPI / SPI1, custom pins)
+ *   13   D7    SD MOSI         (HSPI / SPI1)
+ *    4   D12   SD MISO         (HSPI / SPI1)  ← avoids GPIO12 strapping pin
+ *   22   SCL   SD CS
+ *   26   D3    MOSFET gate     (LOW = peripherals ON; HIGH = peripherals OFF)
+ *   17   D10   Album button    (active LOW; internal pull-up; NOT RTC-capable —
+ *                               cannot wake from deep sleep, read at boot only)
+ *   34   A2    Battery sense   (internal 1M+1M /2 divider to VBAT — leave the
+ *                               header pin physically unconnected)
+ *  ────  ────  ────────────────────────────────────────────────────────────────
+ *  6–11  —     RESERVED        (internal SPI flash — never use)
+ *   16   NC    RESERVED        (in-package PSRAM on N16R2)
+ *    0   D5    BOOT/USB        (do not use; strapping pin)
+ *    1   TXD   UART0 TX        (do not use; used by Serial)
+ *    3   RXD   UART0 RX        (do not use; used by Serial)
+ *   12   D13   Flash strapping (do not drive HIGH during/after boot)
+ *    2   D9    Onboard LED     (free, but drives the LED)
+ *  NOTE  —     GDI FPC socket shares 18/23/19/25/14/26/12 — leave it empty.
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * SD CARD DIRECTORY STRUCTURE
@@ -44,7 +53,7 @@
  *   /fileStringA.txt ← auto-generated; do not edit
  *   /fileStringB.txt ← auto-generated; do not edit
  *
- * ALBUM SWITCHING (button on GPIO22)
+ * ALBUM SWITCHING (button on GPIO17 / D10)
  *   1. Hold button > ALBUM_HOLD_DURATION_MS (2 s)
  *   2. Release
  *   3. Press button TWICE within ALBUM_CONFIRM_WINDOW_MS (5 s shared window)
@@ -66,21 +75,32 @@
 // AO3401 P-channel MOSFET power switch
 // LOW  = gate pulled toward GND → Vgs negative → MOSFET ON  → peripherals powered
 // HIGH = gate at Vsource (3.3 V) → Vgs = 0 → MOSFET OFF → peripherals unpowered
-// External: 10 kΩ series resistor gate→GPIO21; 100 kΩ pull-up gate→3.3 V
-#define MOSFET_PIN      21
+// External: 10 kΩ series resistor gate→GPIO26; 100 kΩ pull-up gate→3.3 V
+#define MOSFET_PIN      26    // silkscreen D3
 
 // SD card SPI (HSPI, custom pins — GPIO 6–11 are reserved for flash on ESP32)
-#define SD_SCLK_PIN     14
-#define SD_MISO_PIN      4    // Remapped: avoids GPIO12 (flash-voltage strapping pin)
-#define SD_MOSI_PIN     13
-#define SD_CS_PIN       33
+#define SD_SCLK_PIN     14    // silkscreen D6
+#define SD_MISO_PIN      4    // silkscreen D12 — avoids GPIO12 (flash-voltage strapping pin)
+#define SD_MOSI_PIN     13    // silkscreen D7
+#define SD_CS_PIN       22    // silkscreen SCL — I2C is unused, so this is a plain GPIO
 
-// Battery ADC — FireBeetle 2 onboard /2 divider on GPIO36 (ADC1 CH0, input-only)
-// Verify this matches your specific board revision; some use GPIO34 or GPIO35.
-#define BAT_ADC_PIN     36
+// Battery sense — onboard 1M+1M /2 divider from VBAT to GPIO34 (ADC1_CH6,
+// input-only). Internal PCB trace: leave the 34/A2 header pin unconnected.
+#define BAT_ADC_PIN     34    // silkscreen A2
 
-// Album switch button — active LOW, internal pull-up
-#define BUTTON_PIN      22
+// Album switch button — active LOW, internal pull-up.
+// GPIO17 is not RTC-capable: it cannot wake the ESP32 from deep sleep, which is
+// fine here because the button is only sampled at each wake/boot.
+#define BUTTON_PIN      17    // silkscreen D10
+
+// ── Bench-test flag ───────────────────────────────────────────────────────────
+// 0 = bench/USB testing (no battery attached): battery voltage is still read
+//     and printed to serial, but never triggers the low-battery red indicator
+//     or the <3.1 V indefinite-sleep shutdown. A floating battery-sense pin
+//     can read any value, which would otherwise freeze the test mid-render.
+// 1 = DEPLOYMENT: full battery protection active. SET THIS BEFORE RUNNING
+//     ON BATTERY, or a deep discharge can permanently damage the LiPo.
+#define BATTERY_PROTECT 0
 
 // ── Album-switch button timing constants ─────────────────────────────────────
 #define BUTTON_DEBOUNCE_MS        50    // Stable-state time required for a valid edge (ms)
@@ -151,7 +171,7 @@ uint32_t read32(fs::File &f) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Battery voltage (ESP32 — analogReadMilliVolts() available in core 2.x+)
-// Uses ADC1 (GPIO36) which is safe during WiFi. The onboard /2 divider means
+// Uses ADC1 (GPIO34, ADC1_CH6) which is safe during WiFi. The onboard /2 divider means
 // actual battery voltage = ADC millivolt reading × 2.
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -365,12 +385,20 @@ void checkSDFiles() {
     File entry = root.openNextFile();
     if (!entry) break;
     String name = String(entry.name());
+    // Skip hidden/metadata files — macOS silently drops "._foo.bmp" AppleDouble
+    // sidecar files (and .DS_Store) onto FAT volumes whenever Finder touches them.
+    // These match the ".bmp" suffix check below but aren't real BMPs, and the
+    // display's BMP parser correctly refuses to draw them — but only after
+    // wasting that wake's refresh cycle on a "not a valid BMP" no-op.
+    bool hidden = name.length() > 0 && name[0] == '.';
     // Match case-insensitively by checking last 4 chars
     String ext = name.length() >= 4 ? name.substring(name.length() - 4) : "";
     ext.toLowerCase();
-    if (ext == ".bmp") {
+    if (ext == ".bmp" && !hidden) {
       bmpFiles.push_back(name);
       Serial.println("  + " + name);
+    } else if (ext == ".bmp" && hidden) {
+      Serial.println("  (skipping hidden file " + name + ")");
     }
     entry.close();
   }
@@ -511,7 +539,16 @@ bool drawBmp(const char *filename) {
   seekOffset = read32(bmpFS);       // offset to pixel data
   headerSize = read32(bmpFS);       // DIB header size
   uint32_t w = read32(bmpFS);       // image width
-  uint32_t h = read32(bmpFS);       // image height
+  // Height is signed in the BMP spec: negative means rows are stored top-down
+  // instead of the usual bottom-up. Some export tools (e.g. Pillow, depending
+  // on version/path) produce top-down BMPs, so this must be handled rather
+  // than assumed away — an unsigned read here previously turned a negative
+  // height into a huge value that silently skipped the entire draw loop
+  // (row counter truncated to a negative int16_t), rendering a blank/white screen.
+  int32_t  hSigned = (int32_t)read32(bmpFS);  // image height
+  bool     topDown = hSigned < 0;
+  uint32_t h = topDown ? (uint32_t)(-hSigned) : (uint32_t)hSigned;
+  if (topDown) Serial.println("Top-down BMP detected — reading rows in reverse.");
   read16(bmpFS);                    // colour planes (must be 1)
   bitDepth = read16(bmpFS);
 
@@ -545,7 +582,11 @@ bool drawBmp(const char *filename) {
   epd.SendCommand(0x10);
   epd.EPD_7IN3F_Draw_Blank(y, width(), EPD_WHITE);   // top border
 
-  // BMP rows are stored bottom-up; we read the bottom row first and walk upwards
+  // BMP rows are stored bottom-up; we read the bottom row first and walk upwards.
+  // Top-down files store the same rows in the opposite file order, so instead of
+  // reading sequentially we seek to each row explicitly, walking the file
+  // backwards to reproduce the same bottom-to-top draw order.
+  if (topDown) bmpFS.seek(seekOffset + (uint32_t)(h - 1) * lineSize);
   bmpFS.read(lineBuffer, sizeof(lineBuffer));
   std::reverse(lineBuffer, lineBuffer + sizeof(lineBuffer));
 
@@ -556,6 +597,7 @@ bool drawBmp(const char *filename) {
     epd.EPD_7IN3F_Draw_Blank(1, x, EPD_WHITE);  // left border
 
     if (row != 0) {
+      if (topDown) bmpFS.seek(seekOffset + (uint32_t)(row - 1) * lineSize);
       bmpFS.read(nextLineBuffer, sizeof(nextLineBuffer));
       std::reverse(nextLineBuffer, nextLineBuffer + sizeof(nextLineBuffer));
     }
@@ -639,7 +681,7 @@ bool drawBmp(const char *filename) {
       }
 
       // Low-battery indicator: red square in top-left corner of image
-      if (batteryVolts <= 3.3f && col <= 50 && row >= (int16_t)(h - 50)) {
+      if (BATTERY_PROTECT && batteryVolts <= 3.3f && col <= 50 && row >= (int16_t)(h - 50)) {
         color = EPD_RED;
         if (batteryVolts < 3.1f) {
           Serial.println("Battery critically low — indefinite sleep.");
